@@ -1,6 +1,6 @@
 # PytestOps Roadmap / Backlog
 
-本文档列出 `PytestOps`（`ntf`）下一阶段**可继续更新**的功能点清单，按优先级和方向分组，便于你按需挑选迭代。
+本文档列出 `PytestOps`（`ntf`）下一阶段**可继续更新**的功能点清单，并结合当前仓库实现情况做了“现状对照”和里程碑拆分。
 
 > 说明
 >
@@ -9,91 +9,114 @@
 
 ---
 
-## P0（强烈建议尽快补齐）
+## 现状对照（基于当前仓库）
 
-### 1. `ntf run` 也支持 `--debugtalk`
+- **CLI 命令已存在**
+  - `ntf run`：转发到 pytest，支持 `--allure-dir`/`--allure-clean`（见 `ntf/cli.py`）。
+  - `ntf run-yaml`：YAML 执行器，支持 `--debugtalk`、`--report`（JSON）、过滤（include/exclude file/case）、`--mock-login`（见 `ntf/cli.py`）。
+  - `ntf migrate check|convert`：目前为“轻量复制+检查”（见 `ntf/cli.py`）。
+  - `ntf allure serve|stop|generate`：依赖本机 Allure CLI（见 `ntf/cli.py`）。
+- **YAML 执行核心已具备**
+  - 渲染 `${func()}`：`ntf/renderer.py`（内置少量函数，且支持加载 DebugTalk 文件）。
+  - 提取：`ntf/executor.py`（`extract` / `extract_list`），存储：`ntf/extract.py`。
+  - 断言：`ntf/assertions.py`（目前集中在 contains/eq/ne/rv/inc 的兼容实现）。
+- **当前缺口（Roadmap 将优先补齐）**
+  - `run-yaml` 目前**不产出 Allure results**（只能 `--report` 输出 JSON）。
+  - 断言类型与失败 diff 还比较弱。
+  - 执行模型（hooks、重试、并发、超时策略）尚未产品化。
+
+## P0（本周/下周建议落地：里程碑驱动）
+
+### M0. 报告闭环：`run-yaml` 直接生成 Allure results（不依赖 pytest）
 
 - **目标**
-  - 让 pytest 直跑（`ntf run`）时，也能加载外部 DebugTalk 文件，复用你旧工程的函数集。
+  - `run-yaml` 执行时可选生成 Allure results（case 粒度、step 粒度、request/response attachments）。
 - **价值**
-  - 统一 `run-yaml` 和 `run` 的能力，减少“YAML 能跑但 pytest 用例调用不到函数”的割裂。
-- **交付物**
-  - `ntf run --debugtalk <path>`
-  - `ntf.pytest_plugin` 中将 DebugTalk 挂载为 session-scope fixture（可选）
-- **风险/注意**
-  - DebugTalk 的导入副作用（全局变量、读配置、改 sys.path）。
-
-### 2. `ntf run-yaml` 生成 Allure results（不依赖 pytest）
-
-- **目标**
-  - `run-yaml` 直接落 Allure results（case 粒度、step 粒度、request/response attachments）。
-- **价值**
-  - YAML 驱动迁移期最常用，直接有可视化报告；不必“先转 pytest 再看 Allure”。
+  - YAML 驱动迁移期最常用，直接可视化；不必“先转 pytest 再看 Allure”。
 - **交付物**
   - `ntf run-yaml ... --allure-dir report/allure-results`
-  - 请求/响应自动写附件（headers/body/json，脱敏可选）
-- **风险/注意**
-  - 需要设计 Allure 的 case/step 结构，避免报告噪音。
+  - attachments：request/response（headers/body/json），可选脱敏
+- **验收标准**
+  - 运行 `ntf run-yaml --cases tests/data --allure-dir report/allure-results` 后，`report/allure-results/` 生成结果文件。
+  - 执行失败时 Allure 中能看到失败原因（断言/异常栈）。
+- **关联代码**
+  - CLI：`ntf/cli.py`（run-yaml 子命令参数与执行循环）
+  - 执行：`ntf/executor.py`
 
-### 3. 断言增强：丰富断言类型 + 更清晰的失败 diff
+### M1. `ntf run` 支持 `--debugtalk`（补齐与 run-yaml 的能力对齐）
+
+- **现状**
+  - `run-yaml` 已支持 `--debugtalk`（见 `ntf/cli.py`）。
+  - `run` 目前仅转发 pytest 参数，未提供 DebugTalk 注入机制。
+- **目标**
+  - 让 pytest 直跑（`ntf run`）时也能加载外部 DebugTalk 文件，复用旧工程函数集。
+- **交付物**
+  - `ntf run --debugtalk <path>`
+  - 在 pytest session 期间可访问 DebugTalk 提供的函数（渲染/fixture 二选一）
+- **验收标准**
+  - pytest 用例中调用渲染逻辑时（`${func()}`）可以解析 DebugTalk 函数。
+  - DebugTalk 加载失败时提示“缺哪个模块、加了哪些 sys.path”。
+- **风险/注意**
+  - DebugTalk 导入副作用（全局变量、读配置、改 sys.path）。
+  - Windows/CI 环境路径差异。
+
+### M2. 断言增强：丰富断言类型 + 更清晰的失败 diff
 
 - **目标**
   - 扩充断言：`lt/lte/gt/gte/in/not_in/regex/jsonschema` 等。
-  - 断言失败输出更结构化（期望 vs 实际，jsonpath 定位）。
-- **价值**
-  - 减少老用例迁移成本；提升失败可读性。
+  - 失败输出更结构化（期望 vs 实际、jsonpath 定位、必要时 diff）。
 - **交付物**
-  - `ntf/assertions.py` 扩展
-  - 可选：`--assert-verbose` / `--assert-jsonpath-strict`
+  - `ntf/assertions.py` 扩展，保持旧语义兼容。
+- **验收标准**
+  - 新增断言在 `tests/` 中有覆盖（至少每种断言 1 条用例）。
+  - 断言失败信息中必须包含：断言类型、定位 key/jsonpath、expected、actual。
 
-### 4. 更强的提取能力：变量类型/默认值/多值策略
+### M3. 提取能力增强：默认值/类型转换/多值策略
 
 - **目标**
-  - `extract` 支持：
-    - 默认值（extract 失败时用默认值）
-    - 类型转换（str/int/float/bool）
-    - 多值策略（first/last/random/join）
-- **价值**
-  - 减少 DebugTalk/自定义脚本；提升用例表达力。
+  - `extract`/`extract_list` 支持：默认值、类型转换（str/int/float/bool）、多值策略（first/last/random/join）。
+- **交付物**
+  - 规则设计（YAML schema）+ `ntf/executor.py` 实现。
+- **验收标准**
+  - 旧 YAML 不改也能跑（向后兼容）。
+  - 新 schema 的示例用例在 `tests/` 可跑通。
 
 ---
 
-## P1（建议迭代）
+## P1（中期：能力完善与稳定性）
 
-### 5. `run-yaml` 执行模型增强：前置/后置步骤、全局 hooks
+### M4. `run-yaml` 执行模型增强：hooks / 显式依赖
 
 - **目标**
-  - 支持 suite/case 级别 hooks：`setup_hooks` / `teardown_hooks`。
-  - 支持 case 之间的数据依赖声明（显式依赖）。
-- **价值**
-  - 让业务流场景更自然，减少“靠文件名排序”。
+  - suite/case 级 hooks：`setup_hooks` / `teardown_hooks`。
+  - case 之间显式依赖声明（避免靠文件名排序）。
+- **验收标准**
+  - hooks 失败时可选择“终止”或“继续”（与 `--continue-on-fail` 协作）。
+  - 依赖缺失/循环依赖能给出可读错误。
 
-### 6. 运行稳定性：重试、节流、并发、超时策略
+### M5. 运行稳定性：重试 / 并发 / 超时策略
 
 - **目标**
   - 重试：按 HTTP code/异常类型/断言失败可选重试。
-  - 节流：QPS、并发数。
-  - 并发：按文件/按 case 并发执行。
-- **价值**
-  - 提升跑 CI 的稳定性与速度。
-- **交付物**
+  - 并发：按文件/按 case 并发。
+  - 超时：全局默认 + 单 case 覆盖。
+- **交付物（CLI 方向）**
   - `--retry N --retry-on 5xx,timeout`
-  - `--workers N`（并发）
-  - `--qps`（节流）
+  - `--workers N`
+  - `--timeout-s`
 
-### 7. 环境配置增强：多环境/变量分层/密钥管理
-
-- **目标**
-  - `configs/` 支持多 profile（dev/test/stage/prod）。
-  - 支持 `.env` / OS env / config yaml 叠加覆盖。
-  - 密钥不落盘（env 或 vault）。
-
-### 8. HTTP 能力增强：签名、代理、证书、会话复用策略
+### M6. 环境配置增强：多环境/变量分层
 
 - **目标**
-  - 统一签名入口（如 sha1/hmac 等）。
-  - 支持代理/证书校验开关。
-  - session cookie/token 自动维护。
+  - `configs/` 支持 profile（dev/test/stage/prod）。
+  - env 覆盖策略清晰（OS env > profile yaml > default yaml）。
+
+### M7. HTTP 能力增强：签名/代理/证书/会话
+
+- **目标**
+  - 统一签名入口（sha1/hmac 等）。
+  - 代理/证书校验开关。
+  - session cookie/token 自动维护策略。
 
 ---
 
@@ -172,8 +195,8 @@
 
 ## 推荐迭代顺序（建议）
 
-1. `run-yaml` 直接生成 Allure results
-2. `ntf run` 支持 `--debugtalk`
-3. 断言体系增强（更多断言 + 更好的 diff）
-4. hooks + 重试 + 并发
-5. migrate convert 的“规范化/自动修复”
+1. `run-yaml` 直接生成 Allure results（M0）
+2. `ntf run` 支持 `--debugtalk`（M1）
+3. 断言体系增强（M2） + 提取增强（M3）
+4. hooks + 重试 + 并发（M4/M5）
+5. migrate convert 的“规范化/自动修复”（可并行推进）
