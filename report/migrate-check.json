@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "files": 11,
+    "cases": 17,
+    "issues": 1
+  },
+  "issues": [
+    {
+      "file": "..\\Test-Automation-Framework-main\\testcase\\extract.yaml",
+      "type": "parse_error",
+      "error": "YAML root must be a non-empty list"
+    }
+  ]
+}

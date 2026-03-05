@@ -1,0 +1,34 @@
+[project]
+name = "PytestOps-framework"
+version = "0.1.0"
+description = "A modular pytest-based test automation framework (API-first)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "pytest>=8.3.2",
+  "allure-pytest>=2.13.5",
+  "requests>=2.32.3",
+  "pyyaml>=6.0.2",
+  "jsonpath>=0.82.2",
+]
+
+[project.scripts]
+ntf = "ntf.cli:main"
+
+[project.entry-points.pytest11]
+ntf = "ntf.pytest_plugin"
+
+[tool.pytest.ini_options]
+addopts = "-ra -q"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test*"]
+
+[tool.setuptools.packages.find]
+include = ["ntf*"]
+exclude = ["tests*", "configs*", "mock_server*"]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"

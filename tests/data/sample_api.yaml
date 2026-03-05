@@ -1,0 +1,13 @@
+- baseInfo:
+    api_name: "DemoAPI"
+    url: "/dar/user/queryUser"
+    method: "GET"
+    header:
+      Content-Type: "application/json"
+  testCase:
+    - case_name: "query user ok"
+      params:
+        user_id: 123456
+      validation: "[{\"contains\": {\"status_code\": 200}}, {\"eq\": {\"msg_code\": 200}}]"
+      extract:
+        user_id: "$.user_id"

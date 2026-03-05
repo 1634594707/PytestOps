@@ -1,0 +1,54 @@
+{
+  "summary": {
+    "files": 11,
+    "copied": 11,
+    "issues": 0
+  },
+  "index": [
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\apiType.yaml",
+      "dst": "tests\\legacy\\ProductManager\\apiType.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\commitOrder.yaml",
+      "dst": "tests\\legacy\\ProductManager\\commitOrder.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\getProductList.yaml",
+      "dst": "tests\\legacy\\ProductManager\\getProductList.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\login_dw.yaml",
+      "dst": "tests\\legacy\\ProductManager\\login_dw.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\orderPay.yaml",
+      "dst": "tests\\legacy\\ProductManager\\orderPay.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\ProductManager\\productDetail.yaml",
+      "dst": "tests\\legacy\\ProductManager\\productDetail.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\Single interface\\addUser.yaml",
+      "dst": "tests\\legacy\\Single interface\\addUser.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\Single interface\\deleteUser.yaml",
+      "dst": "tests\\legacy\\Single interface\\deleteUser.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\Single interface\\queryUser.yaml",
+      "dst": "tests\\legacy\\Single interface\\queryUser.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\Single interface\\updateUser.yaml",
+      "dst": "tests\\legacy\\Single interface\\updateUser.yaml"
+    },
+    {
+      "src": "..\\Test-Automation-Framework-main\\testcase\\Business interface\\BusinessScenario.yml",
+      "dst": "tests\\legacy\\Business interface\\BusinessScenario.yml"
+    }
+  ],
+  "issues": []
+}

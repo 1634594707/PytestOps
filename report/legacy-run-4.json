@@ -1,0 +1,44 @@
+{
+  "summary": {
+    "total": 21,
+    "passed": 14,
+    "failed": 7
+  },
+  "failures": [
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\Business interface\\BusinessScenario.yml",
+      "case_name": "获取商品详情",
+      "error": "eq: error_code expected=0000 actual=4000"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\Business interface\\BusinessScenario.yml",
+      "case_name": "详情页面选择规格，提交订单",
+      "error": "eq: message expected=提交订单成功 actual=None"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\Business interface\\BusinessScenario.yml",
+      "case_name": "订单支付",
+      "error": "eq: message expected=订单支付成功 actual=None"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\Business interface\\BusinessScenario.yml",
+      "case_name": "校验商品订单状态",
+      "error": "eq: status expected=0 actual=None"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\ProductManager\\commitOrder.yaml",
+      "case_name": "提交订单",
+      "error": "eq: message expected=提交订单成功 actual=None\neq: error_code expected=0000 actual=4000"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\ProductManager\\orderPay.yaml",
+      "case_name": "订单支付",
+      "error": "contains: key not found: message\ncontains: error_code expected to contain 0000, actual=9001"
+    },
+    {
+      "file": "D:\\Administrator\\Desktop\\Project\\Testing\\Test-Automation-Framework-main\\Test-Automation-Framework-main\\testcase\\Single interface\\addUser.yaml",
+      "case_name": "正常新增用户",
+      "error": "contains: msg expected to contain 新增成功, actual=新增失败"
+    }
+  ]
+}
