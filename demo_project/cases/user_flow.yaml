@@ -1,0 +1,52 @@
+- baseInfo:
+    api_name: "DemoAuth"
+    url: "/dar/user/login"
+    method: "POST"
+    header:
+      Content-Type: "application/x-www-form-urlencoded;charset=UTF-8"
+  testCase:
+    - case_name: "login ok"
+      data:
+        user_name: "test01"
+        passwd: "admin123"
+      extract:
+        token:
+          source: "$.token"
+          type: str
+        role:
+          source: "$.roles[0]"
+          default: "guest"
+      validation: "[{\"contains\": {\"status_code\": 200}}, {\"inc\": \"token\"}]"
+
+- baseInfo:
+    api_name: "DemoUser"
+    url: "/dar/user/queryUser"
+    method: "GET"
+    header:
+      Content-Type: "application/json"
+      Authorization: "${get_extract_data(token)}"
+      X-Trace-Id: "${get_extract_data(trace_id)}"
+  testCase:
+    - case_name: "query user after login"
+      depends_on:
+        - "login ok"
+      setup_hooks:
+        - call: "${timestamp()}"
+        - set:
+            trace_id: "${uuid4()}"
+      params:
+        user_id: 123456
+      extract:
+        user_id_int:
+          source: "$.user_id"
+          type: int
+          default: 0
+      extract_list:
+        all_msg_codes:
+          source: "$..msg_code"
+          type: int
+          strategy: first
+      validation: "[{\"contains\": {\"status_code\": 200}}, {\"contains\": {\"msg\": \"成功\"}}]"
+      teardown_hooks:
+        - set:
+            last_case: "query user after login"
