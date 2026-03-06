@@ -13,6 +13,22 @@ from ntf.extract import ExtractStore
 
 _CALL_RE = re.compile(r"\$\{(?P<func>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*?)\)\}")
 
+_EXTERNAL_FUNCTIONS: Any | None = None
+
+
+def set_external_functions(functions: Any) -> None:
+    global _EXTERNAL_FUNCTIONS
+    _EXTERNAL_FUNCTIONS = functions
+
+
+def clear_external_functions() -> None:
+    global _EXTERNAL_FUNCTIONS
+    _EXTERNAL_FUNCTIONS = None
+
+
+def get_external_functions() -> Any | None:
+    return _EXTERNAL_FUNCTIONS
+
 
 def _split_args(arg_str: str) -> list[str]:
     s = arg_str.strip()
@@ -85,7 +101,7 @@ class Renderer:
     def __init__(self, ctx: RenderContext, functions: Any | None = None):
         self._ctx = ctx
         self._builtin = BuiltinFunctions(ctx)
-        self._functions = functions or self._builtin
+        self._functions = functions or get_external_functions() or self._builtin
 
     def render(self, data: Any) -> Any:
         """递归渲染 dict/list/str，替换 `${func(a,b)}` 形式。"""

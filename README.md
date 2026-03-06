@@ -297,3 +297,29 @@ set NTF_DINGDING_SECRET=<加签密钥>
 ## 许可证
 
 MIT License
+
+## Extract Schema (M3)
+
+`extract` / `extract_list` still support legacy string rules, and now also support object rules:
+
+```yaml
+extract:
+  user_id:
+    source: "$.data.users[*].id"
+    strategy: first      # first / last / random / join
+    type: int            # str / int / float / bool
+    default: 0
+
+extract_list:
+  user_ids:
+    source: "$.data.users[*].id"
+    type: int
+  user_ids_csv:
+    source: "$.data.users[*].id"
+    strategy: join
+    join_sep: ","
+```
+
+Notes:
+- Backward compatible: old `extract: {k: "$.a.b"}` and regex forms still work.
+- When extraction strategy/type is invalid, runtime error now contains key, source and reason.

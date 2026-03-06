@@ -21,8 +21,8 @@ class YamlTestCase:
     case_name: str
     request: dict[str, Any]
     validation: list[dict[str, Any]]
-    extract: dict[str, str] | None = None
-    extract_list: dict[str, str] | None = None
+    extract: dict[str, Any] | None = None
+    extract_list: dict[str, Any] | None = None
 
 
 def load_yaml_cases(path: str | Path) -> tuple[YamlBaseInfo, list[YamlTestCase]]:

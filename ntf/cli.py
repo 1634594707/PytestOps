@@ -17,9 +17,11 @@ from typing import Any
 
 from ntf.assertions import AssertionEngine
 from ntf.config import load_config
-from ntf.executor import RequestExecutor
+from ntf.executor import ExecuteError, RequestExecutor
 from ntf.extract import ExtractStore
 from ntf.http import RequestsTransport
+from ntf.allure_results import AllureResultsWriter, now_ms
+from ntf.renderer import clear_external_functions, set_external_functions
 from ntf.yaml_case import load_yaml_suite
 
 import pytest
@@ -40,6 +42,11 @@ def main() -> None:
     run.add_argument("--config", default=str(Path("configs/default.yaml")))
     run.add_argument("--allure-dir", default=None, help="If set, pass --alluredir to pytest.")
     run.add_argument(
+        "--debugtalk",
+        default=None,
+        help="Path to a python file providing DebugTalk-style functions for ${func()} rendering (pytest mode).",
+    )
+    run.add_argument(
         "--allure-clean",
         action="store_true",
         help="If set, pass --clean-alluredir (requires --allure-dir).",
@@ -47,6 +54,11 @@ def main() -> None:
 
     run_yaml = sub.add_parser("run-yaml")
     run_yaml.add_argument("--config", default=str(Path("configs/default.yaml")))
+    run_yaml.add_argument(
+        "--allure-dir",
+        default=None,
+        help="If set, write Allure results to this directory (without pytest).",
+    )
     run_yaml.add_argument(
         "--cases",
         required=True,
@@ -150,6 +162,9 @@ def main() -> None:
         # Forward anything after `--` to pytest. Using parse_known_args keeps compatibility
         # with the common pattern: `ntf run ... -- -k xxx`.
         args = []
+        if ns.debugtalk:
+            functions = _load_debugtalk(ns.debugtalk)
+            set_external_functions(functions)
         if ns.allure_dir:
             if importlib.util.find_spec("allure_pytest") is None:
                 print("allure-pytest plugin not installed, cannot use --allure-dir.")
@@ -160,7 +175,11 @@ def main() -> None:
                 args.append("--clean-alluredir")
         if unknown_args:
             args.extend(unknown_args)
-        raise SystemExit(pytest.main(args))
+        try:
+            raise SystemExit(pytest.main(args))
+        finally:
+            # Avoid leaking DebugTalk functions to other test runs.
+            clear_external_functions()
 
     if ns.cmd == "run-yaml":
         if unknown_args:
@@ -252,6 +271,10 @@ def main() -> None:
 
         failures: list[dict[str, Any]] = []
 
+        allure_writer: AllureResultsWriter | None = None
+        if ns.allure_dir:
+            allure_writer = AllureResultsWriter(ns.allure_dir)
+
         for f in uniq_files:
             suite = load_yaml_suite(f)
             for base, cases in suite:
@@ -262,8 +285,9 @@ def main() -> None:
                     if exclude_case_re and exclude_case_re.search(tc.case_name):
                         continue
                     total += 1
+                    start_ms = now_ms()
                     try:
-                        executor.execute(
+                        r = executor.execute(
                             method=base.method,
                             url=base.url,
                             headers=base.header,
@@ -273,11 +297,128 @@ def main() -> None:
                             extract_list=tc.extract_list,
                             validation=tc.validation,
                         )
+                        stop_ms = now_ms()
                         passed += 1
+
+                        if allure_writer is not None:
+                            req_dump = json.dumps({"meta": {"file": f}, "request": r.request}, ensure_ascii=False)
+                            resp_dump = json.dumps(
+                                {
+                                    "status_code": r.response.status_code,
+                                    "text": r.response.text,
+                                    "json": r.response.json_data,
+                                },
+                                ensure_ascii=False,
+                            )
+
+                            t = r.timings_ms
+                            steps = [
+                                {
+                                    "name": "request",
+                                    "status": "passed",
+                                    "stage": "finished",
+                                    "start": t.get("case_start", start_ms),
+                                    "stop": t.get("request_stop", stop_ms),
+                                },
+                                {
+                                    "name": "validate",
+                                    "status": "passed",
+                                    "stage": "finished",
+                                    "start": t.get("request_stop", start_ms),
+                                    "stop": t.get("case_stop", stop_ms),
+                                },
+                            ]
+                            allure_writer.write_case_result(
+                                suite_name=base.api_name or Path(f).stem,
+                                case_name=tc.case_name,
+                                file_path=f,
+                                status="passed",
+                                start_ms=start_ms,
+                                stop_ms=stop_ms,
+                                attachments=[
+                                    ("request", "application/json", req_dump),
+                                    ("response", "application/json", resp_dump),
+                                ],
+                                steps=steps,
+                            )
+                    except ExecuteError as e:
+                        stop_ms = now_ms()
+                        failed += 1
+                        msg = str(e.original) if e.original is not None else str(e)
+                        print(f"[FAIL] {Path(f).name} :: {tc.case_name} -> {msg}")
+
+                        if allure_writer is not None:
+                            req_dump = json.dumps({"meta": {"file": f, "stage": e.stage}, "request": e.request}, ensure_ascii=False)
+
+                            resp_payload: dict[str, Any] | None = None
+                            if e.response is not None:
+                                resp_payload = {
+                                    "status_code": e.response.status_code,
+                                    "text": e.response.text,
+                                    "json": e.response.json_data,
+                                }
+                            resp_dump = json.dumps(resp_payload, ensure_ascii=False)
+
+                            steps = [
+                                {
+                                    "name": "request",
+                                    "status": "failed" if e.stage == "request" else "passed",
+                                    "stage": "finished",
+                                    "start": start_ms,
+                                    "stop": stop_ms,
+                                }
+                            ]
+                            if e.stage == "validation":
+                                steps.append(
+                                    {
+                                        "name": "validate",
+                                        "status": "failed",
+                                        "stage": "finished",
+                                        "start": start_ms,
+                                        "stop": stop_ms,
+                                    }
+                                )
+
+                            allure_writer.write_case_result(
+                                suite_name=base.api_name or Path(f).stem,
+                                case_name=tc.case_name,
+                                file_path=f,
+                                status="failed",
+                                start_ms=start_ms,
+                                stop_ms=stop_ms,
+                                status_details={
+                                    "message": msg,
+                                    "trace": traceback.format_exc(),
+                                },
+                                attachments=[
+                                    ("request", "application/json", req_dump),
+                                    ("response", "application/json", resp_dump),
+                                ],
+                                steps=steps,
+                            )
                     except Exception as e:
+                        stop_ms = now_ms()
                         failed += 1
                         msg = str(e)
                         print(f"[FAIL] {Path(f).name} :: {tc.case_name} -> {msg}")
+
+                        if allure_writer is not None:
+                            allure_writer.write_case_result(
+                                suite_name=base.api_name or Path(f).stem,
+                                case_name=tc.case_name,
+                                file_path=f,
+                                status="failed",
+                                start_ms=start_ms,
+                                stop_ms=stop_ms,
+                                status_details={
+                                    "message": msg,
+                                    "trace": traceback.format_exc(),
+                                },
+                                attachments=[
+                                    ("error", "text/plain", msg),
+                                ],
+                            )
+
                         failures.append(
                             {
                                 "file": f,

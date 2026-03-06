@@ -25,6 +25,34 @@
   - 断言类型与失败 diff 还比较弱。
   - 执行模型（hooks、重试、并发、超时策略）尚未产品化。
 
+---
+
+## 优先级定义（约定）
+
+- **P0**
+  - 影响“能不能用”的主路径能力；迁移期必须；或明显阻塞后续迭代。
+- **P1**
+  - 影响“好不好用”的稳定性/扩展性；可与业务迁移并行推进。
+- **P2**
+  - 体验与工程质量（可观测性、可维护性、发布流程）。
+- **P3**
+  - 平台化/插件化/生态扩展（可选）。
+
+## 里程碑总览（建议）
+
+| Milestone | 主题 | 优先级 | 关键交付物 | 验收点（最小） |
+| --- | --- | --- | --- | --- |
+| M0 | `run-yaml` 生成 Allure results（非 pytest） | P0 | `--allure-dir` + attachments | 目录产出 results，Allure 可展示失败原因 |
+| M1 | `ntf run` 加载 DebugTalk | P0 | `run --debugtalk` | pytest 跑时 `${func()}` 可解析 |
+| M2 | 断言增强 + 失败 diff | P0 | `assertions` 扩展 | 失败信息包含定位/expected/actual |
+| M3 | 提取增强 | P0 | extract schema 扩展 | 向后兼容，示例用例覆盖 |
+| M4 | hooks/依赖模型 | P1 | setup/teardown + depends_on | 循环依赖报错可读 |
+| M5 | 重试/并发/超时 | P1 | `--retry/--workers/--timeout-s` | 用例可控、可复现 |
+| M6 | 多环境配置分层 | P1 | profiles + 覆盖策略 | 一条命令切换环境 |
+| M7 | HTTP 能力增强 | P1 | proxy/certs/session/sign | 兼容旧语义 |
+| M8 | 工程化：质量门禁+发布 | P2 | lint/type/test/release | CI 绿色、可发布 |
+| M9 | CLI/日志/doctor | P2 | `ntf doctor` + 日志参数 | 一键定位依赖问题 |
+
 ## P0（本周/下周建议落地：里程碑驱动）
 
 ### M0. 报告闭环：`run-yaml` 直接生成 Allure results（不依赖 pytest）
@@ -43,6 +71,12 @@
   - CLI：`ntf/cli.py`（run-yaml 子命令参数与执行循环）
   - 执行：`ntf/executor.py`
 
+- **建议拆分任务（实现顺序）**
+  - 1) 定义 Allure writer 抽象（case/step 生命周期）
+  - 2) request/response attachment 结构（headers/body/json）
+  - 3) 失败映射：断言失败/请求异常/渲染异常
+  - 4) 与 `--continue-on-fail` 的汇总一致（最终 exit code 策略）
+
 ### M1. `ntf run` 支持 `--debugtalk`（补齐与 run-yaml 的能力对齐）
 
 - **现状**
@@ -60,6 +94,11 @@
   - DebugTalk 导入副作用（全局变量、读配置、改 sys.path）。
   - Windows/CI 环境路径差异。
 
+- **建议拆分任务**
+  - 1) 统一 DebugTalk 加载入口（`run` / `run-yaml` 复用同一逻辑）
+  - 2) 明确作用域：仅渲染 `${func()}` 生效，避免污染 pytest namespace
+  - 3) 错误提示：记录尝试导入路径与失败原因（ModuleNotFoundError 等）
+
 ### M2. 断言增强：丰富断言类型 + 更清晰的失败 diff
 
 - **目标**
@@ -71,6 +110,11 @@
   - 新增断言在 `tests/` 中有覆盖（至少每种断言 1 条用例）。
   - 断言失败信息中必须包含：断言类型、定位 key/jsonpath、expected、actual。
 
+- **建议拆分任务**
+  - 1) 断言协议梳理（输入：actual/expected/locator；输出：结构化失败信息）
+  - 2) 扩展断言集合（数值/集合/正则/jsonschema）
+  - 3) 统一 diff 表达（优先 JSON 结构 diff；非 JSON 则 text diff）
+
 ### M3. 提取能力增强：默认值/类型转换/多值策略
 
 - **目标**
@@ -80,6 +124,11 @@
 - **验收标准**
   - 旧 YAML 不改也能跑（向后兼容）。
   - 新 schema 的示例用例在 `tests/` 可跑通。
+
+- **建议拆分任务**
+  - 1) schema 设计：保持旧字段不变，新能力通过可选字段扩展
+  - 2) 转换与策略：在 ExtractStore 落盘前完成（避免 store 内部“同时存多类型”）
+  - 3) 错误可读：extract 失败时输出 source 表达式与响应片段（可截断）
 
 ---
 
@@ -122,26 +171,53 @@
 
 ## P2（产品化体验/工程质量）
 
-### 9. 更强的 CLI 体验
+### M8. 工程化闭环：质量门禁（lint/type/test）+ 可发布版本
+
+- **目标**
+  - 建立最小质量门禁，避免功能增加后回归。
+  - 形成可发布的版本策略（本地/CI 均可安装使用）。
+- **交付物**
+  - 命令：`python -m pip install -e .`、`python -m build` 产物可用
+  - 质量门禁：单测、基础 lint、基础类型检查（至少不报错）
+  - 版本：`ntf --version` 与包版本一致
+- **验收标准**
+  - 在干净环境中从源码安装后，`ntf --help` / `ntf run-yaml --help` 可用
+  - CI（若已接入）在 pull request 上必跑并出结果
+
+### M9. 可观测性与诊断：日志体系 + `ntf doctor`
+
+- **目标**
+  - 统一日志输出，既适合本地排错也适合 CI 留档。
+  - 一键诊断依赖与常见错误（Allure CLI、端口占用、配置合法性、mock 状态）。
+- **交付物**
+  - `--log-level` / `--log-file`
+  - `ntf doctor`（输出检查项与建议修复动作）
+- **验收标准**
+  - `ntf doctor` 在缺依赖时能给出“安装什么/配置什么/下一步执行什么”
+  - 当启用 `--log-file` 时，关键请求链路与失败原因可追溯
+
+---
+
+### 10. 更强的 CLI 体验
 
 - **目标**
   - `ntf doctor`：检查依赖（allure/mock deps/端口占用/配置合法性）。
   - `ntf --version` 输出框架版本、python 版本。
   - 子命令提供 shell completion（可选）。
 
-### 10. 日志体系
+### 11. 日志体系
 
 - **目标**
   - 统一日志：console 精简 + 文件完整。
   - 支持 `--log-level` / `--log-file`。
 
-### 11. 报告体系扩展
+### 12. 报告体系扩展
 
 - **目标**
   - 除 Allure 外提供 JSON/HTML summary。
   - 失败用例自动聚合（按错误类型、接口、模块）。
 
-### 12. 迁移工具增强
+### 13. 迁移工具增强
 
 - **目标**
   - `migrate check` 输出更细粒度规则、自动修复建议。
@@ -154,7 +230,7 @@
 
 ## P3（可选：向平台化/插件化演进）
 
-### 13. 插件系统
+### 14. 插件系统
 
 - **目标**
   - 支持通过 entry-points 扩展：
@@ -163,13 +239,13 @@
     - 自定义 transport（如 httpx）
     - 自定义报告输出
 
-### 14. 测试数据管理
+### 15. 测试数据管理
 
 - **目标**
   - fixtures 数据库/文件夹约定
   - 支持数据工厂（随机生成、唯一性保障）
 
-### 15. 与 CI 集成模板
+### 16. 与 CI 集成模板
 
 - **目标**
   - 提供 GitHub Actions / GitLab CI / Jenkins 示例
