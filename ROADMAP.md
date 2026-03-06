@@ -294,3 +294,11 @@ P2 milestones implemented:
 
 - M8: added quality gate setup in project config (dev extras for ruff/mypy/build) and CI workflow (`.github/workflows/ci.yml`) running lint/type/test/build.
 - M9: added CLI logging options (`--log-level`, `--log-file`) and `ntf doctor` diagnostics command; also added `ntf --version` output.
+
+## Progress Update (2026-03-06, P3)
+
+P3 milestones implemented:
+
+- M14 plugin system: entry-points based loading plus runtime registration in `ntf.plugins`, integrated with assertions/renderer/run-yaml transport/reporter extension points.
+- M15 test data management: `FixtureStore` convention (`tests/fixtures`) and `data_factory` random/unique helpers.
+- M16 multi-CI templates: added `.gitlab-ci.yml` and `Jenkinsfile` (GitHub Actions already present).

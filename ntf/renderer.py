@@ -5,10 +5,12 @@ import random
 import re
 import time
 import datetime
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ntf.extract import ExtractStore
+from ntf.plugins import function_plugins
 
 
 _CALL_RE = re.compile(r"\$\{(?P<func>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*?)\)\}")
@@ -96,12 +98,38 @@ class BuiltinFunctions:
         zero = datetime.datetime(year=now.year, month=now.month, day=now.day)
         return int(zero.timestamp())
 
+    def uuid4(self) -> str:
+        return str(uuid.uuid4())
+
+    def random_str(self, n: str = "8") -> str:
+        try:
+            ln = max(1, int(n))
+        except Exception:
+            ln = 8
+        alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return "".join(random.choice(alphabet) for _ in range(ln))
+
+    def random_email(self, prefix: str = "user") -> str:
+        return f"{prefix}_{self.random_str('8')}@example.test"
+
+
+class _PluginFunctionContainer:
+    def __init__(self) -> None:
+        self._funcs = function_plugins()
+
+    def __getattr__(self, name: str) -> Any:
+        fn = self._funcs.get(name)
+        if fn is None:
+            raise AttributeError(name)
+        return fn
+
 
 class Renderer:
     def __init__(self, ctx: RenderContext, functions: Any | None = None):
         self._ctx = ctx
         self._builtin = BuiltinFunctions(ctx)
         self._functions = functions or get_external_functions() or self._builtin
+        self._plugin_functions = _PluginFunctionContainer()
 
     def render(self, data: Any) -> Any:
         """递归渲染 dict/list/str，替换 `${func(a,b)}` 形式。"""
@@ -129,7 +157,9 @@ class Renderer:
 
             fn: Callable[..., Any] | None = getattr(self._functions, func_name, None)
             if fn is None:
-                fn = getattr(self._builtin, func_name)
+                fn = getattr(self._builtin, func_name, None)
+            if fn is None:
+                fn = getattr(self._plugin_functions, func_name)
             value = fn(*args)
             return str(value) if value is not None else ""
 

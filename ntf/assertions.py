@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import jsonpath
+from ntf.plugins import assertion_plugins
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class AssertionEngine:
 
     def assert_all(self, expected: list[dict[str, Any]], actual_json: Any, status_code: int) -> None:
         failures: list[AssertionFailure] = []
+        ext = assertion_plugins()
 
         for item in expected:
             if not isinstance(item, dict) or len(item) != 1:
@@ -89,15 +91,40 @@ class AssertionEngine:
             elif kind == "jsonschema":
                 self._assert_jsonschema(payload, actual_json, failures)
             else:
-                failures.append(
-                    AssertionFailure(
-                        kind=kind,
-                        locator="",
-                        expected=payload,
-                        actual=None,
-                        reason="unsupported assertion kind",
+                plugin = ext.get(kind)
+                if plugin is None:
+                    failures.append(
+                        AssertionFailure(
+                            kind=kind,
+                            locator="",
+                            expected=payload,
+                            actual=None,
+                            reason="unsupported assertion kind",
+                        )
                     )
-                )
+                else:
+                    try:
+                        plugin(payload, actual_json, status_code)
+                    except AssertionError as e:
+                        failures.append(
+                            AssertionFailure(
+                                kind=kind,
+                                locator="plugin",
+                                expected=payload,
+                                actual=None,
+                                reason=str(e),
+                            )
+                        )
+                    except Exception as e:
+                        failures.append(
+                            AssertionFailure(
+                                kind=kind,
+                                locator="plugin",
+                                expected=payload,
+                                actual=None,
+                                reason=f"plugin error: {e}",
+                            )
+                        )
 
         if failures:
             raise AssertionError("\n".join(f.format() for f in failures))

@@ -1,0 +1,38 @@
+stages:
+  - quality
+  - test
+  - build
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+before_script:
+  - python -m pip install --upgrade pip
+  - python -m pip install -e .[dev]
+
+quality:
+  stage: quality
+  script:
+    - ruff check ntf tests
+    - mypy ntf
+
+test:
+  stage: test
+  script:
+    - pytest -q
+  artifacts:
+    when: always
+    paths:
+      - report/
+
+build:
+  stage: build
+  script:
+    - python -m build
+  artifacts:
+    paths:
+      - dist/

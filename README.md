@@ -426,3 +426,39 @@ ntf --log-level DEBUG --log-file report/ntf.log run-yaml --config configs/defaul
 - config loading (with optional profile)
 - mock server entry/dependencies
 - writable report/runtime directories
+
+## P3 Features (M14-M16)
+
+### Plugin System (entry-points + runtime registration)
+
+Implemented plugin categories:
+
+- `ntf.assertions`: custom assertion operators
+- `ntf.functions`: custom renderer functions for `${func()}`
+- `ntf.transports`: custom transport factory for `run-yaml --transport <name>`
+- `ntf.reporters`: custom reporter for `run-yaml --reporter <name>`
+
+Runtime registration API:
+
+```python
+from ntf.plugins import (
+    register_assertion,
+    register_function,
+    register_transport,
+    register_reporter,
+)
+```
+
+### Test Data Management
+
+- Added `ntf.fixtures.FixtureStore` with convention directory `tests/fixtures`.
+- Added `ntf.data_factory` helpers: `unique_id`, `random_str`, `random_email`, `random_phone`.
+- Renderer builtins now include `uuid4`, `random_str`, `random_email`.
+
+### Multi-CI Templates
+
+Added reference templates:
+
+- GitHub Actions: `.github/workflows/ci.yml`
+- GitLab CI: `.gitlab-ci.yml`
+- Jenkins: `Jenkinsfile`

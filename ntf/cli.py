@@ -25,6 +25,7 @@ from ntf.executor import ExecuteError, RequestExecutor
 from ntf.extract import ExtractStore
 from ntf.http import RequestsTransport
 from ntf.allure_results import AllureResultsWriter, now_ms
+from ntf.plugins import plugin_counts, reporter_plugins, transport_plugins
 from ntf.renderer import RenderContext, Renderer, clear_external_functions, set_external_functions
 from ntf.yaml_case import load_yaml_suite
 
@@ -140,6 +141,16 @@ def main() -> None:
     )
     run_yaml.add_argument("--workers", type=int, default=1, help="Worker threads for independent cases.")
     run_yaml.add_argument("--timeout-s", type=float, default=None, help="Override global timeout seconds.")
+    run_yaml.add_argument(
+        "--transport",
+        default=None,
+        help="Use named transport plugin from entry-points group ntf.transports.",
+    )
+    run_yaml.add_argument(
+        "--reporter",
+        default=None,
+        help="Use named reporter plugin from entry-points group ntf.reporters.",
+    )
 
     allure = sub.add_parser("allure")
     allure_sub = allure.add_subparsers(dest="allure_cmd", required=True)
@@ -284,12 +295,7 @@ def main() -> None:
             k, v = item.split("=", 1)
             store.set(k, v)
 
-        transport = RequestsTransport(
-            proxy=cfg.http_proxy,
-            verify=cfg.http_verify,
-            cert=cfg.http_cert,
-            session_persist=cfg.http_session_persist,
-        )
+        transport = _build_transport(ns.transport, cfg)
         engine = AssertionEngine()
         timeout_s = ns.timeout_s if ns.timeout_s is not None else cfg.timeout_s
         executor = RequestExecutor(
@@ -473,6 +479,7 @@ def main() -> None:
         summary = {"total": total, "passed": passed, "failed": failed, "skipped": skipped}
         print(f"Summary: total={total} passed={passed} failed={failed} skipped={skipped}")
         LOG.info("run-yaml summary total=%s passed=%s failed=%s skipped=%s", total, passed, failed, skipped)
+        _dispatch_reporter(ns.reporter, summary=summary, failures=failures)
         if ns.report:
             _write_report(ns.report, summary=summary, failures=failures)
         raise SystemExit(0 if failed == 0 else 1)
@@ -947,6 +954,12 @@ def _collect_doctor_checks(config_path: str, *, profile: str | None) -> list[dic
         checks.append({"name": name, "status": status, "detail": detail})
 
     add("version", "PASS", _version_text())
+    cnt = plugin_counts()
+    add(
+        "plugins",
+        "PASS",
+        f"assertions={cnt['assertions']} functions={cnt['functions']} transports={cnt['transports']} reporters={cnt['reporters']}",
+    )
     add(
         "python",
         "PASS" if sys.version_info >= (3, 12) else "FAIL",
@@ -1005,6 +1018,37 @@ def _print_doctor_checks(checks: list[dict[str, str]]) -> None:
     print(f"doctor summary: total={len(checks)} fail={len(failed)} warn={len(warns)}")
     if failed:
         print("doctor next step: fix FAIL items first, then rerun `ntf doctor`.")
+
+
+def _build_transport(name: str | None, cfg: Any) -> Any:
+    if not name:
+        return RequestsTransport(
+            proxy=cfg.http_proxy,
+            verify=cfg.http_verify,
+            cert=cfg.http_cert,
+            session_persist=cfg.http_session_persist,
+        )
+    plugins = transport_plugins()
+    factory = plugins.get(name)
+    if factory is None:
+        raise SystemExit(f"transport plugin not found: {name}")
+    try:
+        return factory(cfg)
+    except Exception as e:
+        raise SystemExit(f"transport plugin init failed ({name}): {e}") from e
+
+
+def _dispatch_reporter(name: str | None, *, summary: dict[str, Any], failures: list[dict[str, Any]]) -> None:
+    if not name:
+        return
+    plugins = reporter_plugins()
+    rep = plugins.get(name)
+    if rep is None:
+        raise SystemExit(f"reporter plugin not found: {name}")
+    try:
+        rep(summary, failures)
+    except Exception as e:
+        raise SystemExit(f"reporter plugin failed ({name}): {e}") from e
 
 
 def _write_json(path: str, data: Any) -> None:
