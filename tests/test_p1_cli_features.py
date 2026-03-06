@@ -78,6 +78,7 @@ def test_run_hooks_support_set_and_call():
         ],
         store,
         functions=_Funcs(),
+        renderer_name=None,
         phase="setup_hooks",
         case_name="demo",
     )

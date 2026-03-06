@@ -13,7 +13,7 @@ import jsonpath
 
 from ntf.assertions import AssertionEngine
 from ntf.extract import ExtractStore
-from ntf.renderer import RenderContext, Renderer
+from ntf.renderer import RenderContext, build_renderer
 from ntf.http import HttpResponse, Transport
 
 
@@ -48,13 +48,18 @@ class RequestExecutor:
         assertion_engine: AssertionEngine | None = None,
         functions: Any | None = None,
         sign_config: dict[str, Any] | None = None,
+        renderer_name: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
         self._transport = transport
         self._store = extract_store
         self._assertions = assertion_engine or AssertionEngine()
-        self._renderer = Renderer(RenderContext(extract_store=self._store), functions=functions)
+        self._renderer = build_renderer(
+            RenderContext(extract_store=self._store),
+            functions=functions,
+            renderer_name=renderer_name,
+        )
         self._sign_config = sign_config
 
     def execute(

@@ -462,3 +462,29 @@ Added reference templates:
 - GitHub Actions: `.github/workflows/ci.yml`
 - GitLab CI: `.gitlab-ci.yml`
 - Jenkins: `Jenkinsfile`
+
+## Completion Notes
+
+### Renderer Plugin (full)
+
+`run-yaml` now supports a custom renderer plugin:
+
+```bash
+ntf run-yaml --config configs/default.yaml --cases tests/data --renderer my_renderer
+```
+
+Renderer plugins are loaded from `ntf.renderers` entry-points and can override rendering behavior globally for run-yaml flow (request/cookies/hooks).
+
+### DingDing for run-yaml
+
+`run-yaml` now supports DingDing summary notification directly:
+
+```bash
+ntf run-yaml --config configs/default.yaml --cases tests/data --dingding-enabled --dingding-webhook <webhook> --dingding-secret <secret> --dingding-at-all
+```
+
+Also supports env-based configuration:
+
+- `NTF_DINGDING_ENABLED`
+- `NTF_DINGDING_WEBHOOK`
+- `NTF_DINGDING_SECRET`

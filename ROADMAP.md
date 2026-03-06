@@ -302,3 +302,10 @@ P3 milestones implemented:
 - M14 plugin system: entry-points based loading plus runtime registration in `ntf.plugins`, integrated with assertions/renderer/run-yaml transport/reporter extension points.
 - M15 test data management: `FixtureStore` convention (`tests/fixtures`) and `data_factory` random/unique helpers.
 - M16 multi-CI templates: added `.gitlab-ci.yml` and `Jenkinsfile` (GitHub Actions already present).
+
+## Patch Note (2026-03-06)
+
+Feature-completion patch:
+
+- Pluginized renderer extension completed via `ntf.renderers` entry-points and `--renderer` for run-yaml.
+- `run-yaml` now supports DingDing summary notification directly (CLI flags + env fallback).

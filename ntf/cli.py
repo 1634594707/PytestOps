@@ -26,7 +26,8 @@ from ntf.extract import ExtractStore
 from ntf.http import RequestsTransport
 from ntf.allure_results import AllureResultsWriter, now_ms
 from ntf.plugins import plugin_counts, reporter_plugins, transport_plugins
-from ntf.renderer import RenderContext, Renderer, clear_external_functions, set_external_functions
+from ntf.renderer import RenderContext, build_renderer, clear_external_functions, set_external_functions
+from ntf.integrations.dingding import DingDingBot
 from ntf.yaml_case import load_yaml_suite
 
 import pytest
@@ -151,6 +152,15 @@ def main() -> None:
         default=None,
         help="Use named reporter plugin from entry-points group ntf.reporters.",
     )
+    run_yaml.add_argument(
+        "--renderer",
+        default=None,
+        help="Use named renderer plugin from entry-points group ntf.renderers.",
+    )
+    run_yaml.add_argument("--dingding-enabled", action="store_true", help="Send run-yaml summary to DingDing.")
+    run_yaml.add_argument("--dingding-webhook", default=None, help="DingDing robot webhook URL.")
+    run_yaml.add_argument("--dingding-secret", default=None, help="DingDing robot secret.")
+    run_yaml.add_argument("--dingding-at-all", action="store_true", help="Mention all in DingDing message.")
 
     allure = sub.add_parser("allure")
     allure_sub = allure.add_subparsers(dest="allure_cmd", required=True)
@@ -306,6 +316,7 @@ def main() -> None:
             assertion_engine=engine,
             functions=functions,
             sign_config=cfg.sign,
+            renderer_name=ns.renderer,
         )
 
         if ns.mock_login:
@@ -327,7 +338,7 @@ def main() -> None:
         for f in uniq_files:
             suite = load_yaml_suite(f)
             for base, cases in suite:
-                cookies = _parse_cookies(base.cookies, store, functions=functions)
+                cookies = _parse_cookies(base.cookies, store, functions=functions, renderer_name=ns.renderer)
                 for tc in cases:
                     if include_case_re and not include_case_re.search(tc.case_name):
                         continue
@@ -419,7 +430,14 @@ def main() -> None:
 
                 start_ms = now_ms()
                 try:
-                    _run_hooks(tc.setup_hooks, store, functions=functions, phase="setup_hooks", case_name=tc.case_name)
+                    _run_hooks(
+                        tc.setup_hooks,
+                        store,
+                        functions=functions,
+                        renderer_name=ns.renderer,
+                        phase="setup_hooks",
+                        case_name=tc.case_name,
+                    )
                     s_ms, stop_ms, ok, result, err = _run_case_with_retry(
                         executor=executor,
                         base=e["base"],
@@ -466,7 +484,14 @@ def main() -> None:
                         raise SystemExit(1)
                 finally:
                     try:
-                        _run_hooks(tc.teardown_hooks, store, functions=functions, phase="teardown_hooks", case_name=tc.case_name)
+                        _run_hooks(
+                            tc.teardown_hooks,
+                            store,
+                            functions=functions,
+                            renderer_name=ns.renderer,
+                            phase="teardown_hooks",
+                            case_name=tc.case_name,
+                        )
                     except Exception as teardown_err:
                         print(f"[WARN] {Path(file_path).name} :: {tc.case_name} teardown error -> {teardown_err}")
                         LOG.warning(
@@ -479,6 +504,14 @@ def main() -> None:
         summary = {"total": total, "passed": passed, "failed": failed, "skipped": skipped}
         print(f"Summary: total={total} passed={passed} failed={failed} skipped={skipped}")
         LOG.info("run-yaml summary total=%s passed=%s failed=%s skipped=%s", total, passed, failed, skipped)
+        _notify_dingding_run_yaml(
+            summary=summary,
+            failures=failures,
+            enabled=ns.dingding_enabled,
+            webhook=ns.dingding_webhook,
+            secret=ns.dingding_secret,
+            at_all=ns.dingding_at_all,
+        )
         _dispatch_reporter(ns.reporter, summary=summary, failures=failures)
         if ns.report:
             _write_report(ns.report, summary=summary, failures=failures)
@@ -607,10 +640,18 @@ def main() -> None:
         raise SystemExit(1 if failed else 0)
 
 
-def _run_hooks(hooks: list[Any] | None, store: ExtractStore, *, functions: Any | None, phase: str, case_name: str) -> None:
+def _run_hooks(
+    hooks: list[Any] | None,
+    store: ExtractStore,
+    *,
+    functions: Any | None,
+    renderer_name: str | None,
+    phase: str,
+    case_name: str,
+) -> None:
     if not hooks:
         return
-    renderer = Renderer(RenderContext(extract_store=store), functions=functions)
+    renderer = build_renderer(RenderContext(extract_store=store), functions=functions, renderer_name=renderer_name)
     for idx, hook in enumerate(hooks):
         try:
             if isinstance(hook, str):
@@ -958,7 +999,13 @@ def _collect_doctor_checks(config_path: str, *, profile: str | None) -> list[dic
     add(
         "plugins",
         "PASS",
-        f"assertions={cnt['assertions']} functions={cnt['functions']} transports={cnt['transports']} reporters={cnt['reporters']}",
+        "assertions={a} functions={f} transports={t} reporters={r} renderers={rr}".format(
+            a=cnt["assertions"],
+            f=cnt["functions"],
+            t=cnt["transports"],
+            r=cnt["reporters"],
+            rr=cnt.get("renderers", 0),
+        ),
     )
     add(
         "python",
@@ -1051,6 +1098,44 @@ def _dispatch_reporter(name: str | None, *, summary: dict[str, Any], failures: l
         raise SystemExit(f"reporter plugin failed ({name}): {e}") from e
 
 
+def _notify_dingding_run_yaml(
+    *,
+    summary: dict[str, Any],
+    failures: list[dict[str, Any]],
+    enabled: bool,
+    webhook: str | None,
+    secret: str | None,
+    at_all: bool,
+) -> None:
+    env_enabled = str(os.getenv("NTF_DINGDING_ENABLED", "")).strip().lower() in {"1", "true", "yes", "y", "on"}
+    if not enabled and not env_enabled:
+        return
+
+    wh = webhook or os.getenv("NTF_DINGDING_WEBHOOK")
+    sec = secret or os.getenv("NTF_DINGDING_SECRET")
+    if not wh or not sec:
+        LOG.warning("dingding enabled but webhook/secret missing")
+        return
+
+    content_lines = [
+        "[ntf run-yaml summary]",
+        f"total={summary.get('total', 0)}",
+        f"passed={summary.get('passed', 0)}",
+        f"failed={summary.get('failed', 0)}",
+        f"skipped={summary.get('skipped', 0)}",
+    ]
+    if failures:
+        top = failures[:3]
+        content_lines.append("top failures:")
+        for x in top:
+            content_lines.append(f"- {Path(str(x.get('file',''))).name}::{x.get('case_name','')} -> {x.get('error','')}")
+    content = "\n".join(content_lines)
+    try:
+        DingDingBot(webhook=str(wh), secret=str(sec)).send_text(content, at_all=at_all)
+    except Exception as e:
+        LOG.warning("dingding notify failed: %s", e)
+
+
 def _write_json(path: str, data: Any) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1138,7 +1223,13 @@ def _migrate_check(path: str) -> dict[str, Any]:
     }
 
 
-def _parse_cookies(raw: Any, store: ExtractStore, *, functions: Any | None = None) -> dict[str, Any] | None:
+def _parse_cookies(
+    raw: Any,
+    store: ExtractStore,
+    *,
+    functions: Any | None = None,
+    renderer_name: str | None = None,
+) -> dict[str, Any] | None:
     if raw is None:
         return None
     if isinstance(raw, dict):
@@ -1146,9 +1237,11 @@ def _parse_cookies(raw: Any, store: ExtractStore, *, functions: Any | None = Non
     if isinstance(raw, str):
         # support ${func()} in cookies string
         try:
-            from ntf.renderer import RenderContext, Renderer
-
-            rendered = Renderer(RenderContext(extract_store=store), functions=functions).render(raw)
+            rendered = build_renderer(
+                RenderContext(extract_store=store),
+                functions=functions,
+                renderer_name=renderer_name,
+            ).render(raw)
         except Exception:
             rendered = raw
 

@@ -11,12 +11,15 @@ FunctionPlugin = Callable[..., Any]
 TransportPlugin = Callable[[Any], Any]
 # Reporter plugin: func(summary, failures) -> None
 ReporterPlugin = Callable[[dict[str, Any], list[dict[str, Any]]], None]
+# Renderer plugin: class/factory compatible with Renderer(ctx, functions=?)
+RendererPlugin = Callable[..., Any]
 
 
 _assertion_plugins: dict[str, AssertionPlugin] = {}
 _function_plugins: dict[str, FunctionPlugin] = {}
 _transport_plugins: dict[str, TransportPlugin] = {}
 _reporter_plugins: dict[str, ReporterPlugin] = {}
+_renderer_plugins: dict[str, RendererPlugin] = {}
 _loaded = False
 
 
@@ -30,6 +33,7 @@ def ensure_loaded() -> None:
     _load_group("ntf.functions", _function_plugins)
     _load_group("ntf.transports", _transport_plugins)
     _load_group("ntf.reporters", _reporter_plugins)
+    _load_group("ntf.renderers", _renderer_plugins)
 
 
 def register_assertion(name: str, plugin: AssertionPlugin) -> None:
@@ -46,6 +50,10 @@ def register_transport(name: str, plugin: TransportPlugin) -> None:
 
 def register_reporter(name: str, plugin: ReporterPlugin) -> None:
     _reporter_plugins[name] = plugin
+
+
+def register_renderer(name: str, plugin: RendererPlugin) -> None:
+    _renderer_plugins[name] = plugin
 
 
 def assertion_plugins() -> dict[str, AssertionPlugin]:
@@ -68,6 +76,11 @@ def reporter_plugins() -> dict[str, ReporterPlugin]:
     return dict(_reporter_plugins)
 
 
+def renderer_plugins() -> dict[str, RendererPlugin]:
+    ensure_loaded()
+    return dict(_renderer_plugins)
+
+
 def plugin_counts() -> dict[str, int]:
     ensure_loaded()
     return {
@@ -75,6 +88,7 @@ def plugin_counts() -> dict[str, int]:
         "functions": len(_function_plugins),
         "transports": len(_transport_plugins),
         "reporters": len(_reporter_plugins),
+        "renderers": len(_renderer_plugins),
     }
 
 

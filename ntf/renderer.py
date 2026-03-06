@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ntf.extract import ExtractStore
-from ntf.plugins import function_plugins
+from ntf.plugins import function_plugins, renderer_plugins
 
 
 _CALL_RE = re.compile(r"\$\{(?P<func>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*?)\)\}")
@@ -177,3 +177,19 @@ class Renderer:
             return rendered
 
         return rendered
+
+
+def build_renderer(ctx: RenderContext, *, functions: Any | None = None, renderer_name: str | None = None) -> Any:
+    if not renderer_name:
+        return Renderer(ctx, functions=functions)
+
+    plugins = renderer_plugins()
+    plugin = plugins.get(renderer_name)
+    if plugin is None:
+        raise ValueError(f"renderer plugin not found: {renderer_name}")
+
+    # Compatible with both class-based and factory-based plugins.
+    try:
+        return plugin(ctx, functions=functions)
+    except TypeError:
+        return plugin(ctx)

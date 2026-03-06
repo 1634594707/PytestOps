@@ -5,8 +5,8 @@ from ntf.cli import _build_transport, _dispatch_reporter
 from ntf.data_factory import random_email, random_phone, unique_id
 from ntf.extract import ExtractStore
 from ntf.fixtures import FixtureStore
-from ntf.plugins import register_assertion, register_function, register_reporter, register_transport
-from ntf.renderer import RenderContext, Renderer
+from ntf.plugins import register_assertion, register_function, register_renderer, register_reporter, register_transport
+from ntf.renderer import RenderContext, Renderer, build_renderer
 
 
 def test_plugin_assertion_and_function():
@@ -63,3 +63,16 @@ def test_plugin_transport_and_reporter():
     assert isinstance(t, _DummyTransport)
     _dispatch_reporter("dummy", summary={"total": 1, "passed": 1, "failed": 0, "skipped": 0}, failures=[])
     assert seen["called"] is True
+
+
+def test_plugin_renderer_override():
+    class MyRenderer(Renderer):
+        def _render_str(self, s: str):
+            if s == "${special()}":
+                return "from-renderer-plugin"
+            return super()._render_str(s)
+
+    register_renderer("my_renderer", MyRenderer)
+    store = ExtractStore()
+    r = build_renderer(RenderContext(extract_store=store), renderer_name="my_renderer")
+    assert r.render("${special()}") == "from-renderer-plugin"
