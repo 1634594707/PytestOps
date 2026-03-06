@@ -36,6 +36,7 @@ LOG = logging.getLogger("ntf")
 
 
 def main() -> None:
+    _auto_load_dotenv()
     argv = sys.argv[1:]
     if "..." in argv and ("run-yaml" in argv or "migrate" in argv):
         print("Detected '...' placeholder in command. Please remove it and provide the real arguments.")
@@ -978,6 +979,34 @@ def _setup_logging(level: str, log_file: str | None) -> None:
         force=True,
     )
     LOG.debug("logging initialized level=%s file=%s", resolved, log_file)
+
+
+def _auto_load_dotenv() -> None:
+    _load_env_file(Path(".env"), override=False)
+
+
+def _load_env_file(path: Path, *, override: bool = False) -> int:
+    if not path.exists() or not path.is_file():
+        return 0
+    loaded = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        k = key.strip()
+        if not k:
+            continue
+        v = value.strip()
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        if not override and os.getenv(k) is not None:
+            continue
+        os.environ[k] = v
+        loaded += 1
+    return loaded
 
 
 def _version_text() -> str:
