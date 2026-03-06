@@ -323,3 +323,66 @@ extract_list:
 Notes:
 - Backward compatible: old `extract: {k: "$.a.b"}` and regex forms still work.
 - When extraction strategy/type is invalid, runtime error now contains key, source and reason.
+
+## P1 Features (M4-M7)
+
+### run-yaml execution model
+
+- `setup_hooks` / `teardown_hooks` are supported per case.
+- `depends_on` is supported per case (string or list), with cycle detection.
+- Dependency failures mark downstream cases as skipped.
+
+Example:
+
+```yaml
+- baseInfo:
+    api_name: "demo"
+    url: "/dar/user/queryUser"
+    method: "GET"
+  testCase:
+    - case_name: "login"
+      setup_hooks:
+        - {set: {token: "abc"}}
+      validation: "[{\"contains\": {\"status_code\": 200}}]"
+
+    - case_name: "query after login"
+      depends_on: ["login"]
+      params:
+        token: "${get_extract_data(token)}"
+      teardown_hooks:
+        - {call: "${timestamp()}"}
+      validation: "[{\"contains\": {\"status_code\": 200}}]"
+```
+
+### Retry / workers / timeout
+
+`ntf run-yaml` now supports:
+
+- `--retry N`
+- `--retry-on request,validation,extract,timeout,5xx,exception`
+- `--workers N` (auto-fallback to sequential when cases have dependencies/hooks/shared extract behavior)
+- `--timeout-s <float>`
+
+### Profile config and override priority
+
+- New `--profile <name>` in both `ntf run` and `ntf run-yaml`.
+- Priority: `env > profile yaml > default yaml`
+
+Common env overrides:
+
+- `NTF_BASE_URL`
+- `NTF_TIMEOUT_S`
+- `NTF_HTTP_PROXY`
+- `NTF_HTTP_VERIFY`
+- `NTF_HTTP_CERT`
+- `NTF_HTTP_SESSION_PERSIST`
+
+### HTTP enhancements
+
+`RequestsTransport` now supports:
+
+- proxy
+- verify (bool or CA bundle path)
+- cert
+- session persistence switch
+- optional request signing (`hmac-sha256` / `hmac-sha1` / `sha1`)

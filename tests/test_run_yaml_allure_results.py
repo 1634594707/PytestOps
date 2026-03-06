@@ -11,7 +11,7 @@ def test_run_yaml_writes_allure_results(monkeypatch):
     from ntf.http import DummyTransport, HttpResponse
     from ntf.yaml_case import load_yaml_cases
 
-    def _dummy_requests_transport_factory():
+    def _dummy_requests_transport_factory(*args, **kwargs):
         cfg = load_config("configs/default.yaml")
         base, _cases = load_yaml_cases("tests/data/sample_api_pass_fail.yaml")
 

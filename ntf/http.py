@@ -25,12 +25,26 @@ class Transport(Protocol):
         data: Any | None = None,
         json: Any | None = None,
         timeout_s: float | None = None,
+        proxy: str | None = None,
+        verify: bool | str | None = None,
+        cert: str | tuple[str, str] | None = None,
     ) -> HttpResponse: ...
 
 
 class RequestsTransport:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        proxy: str | None = None,
+        verify: bool | str = True,
+        cert: str | tuple[str, str] | None = None,
+        session_persist: bool = True,
+    ) -> None:
         self._session = requests.Session()
+        self._proxy = proxy
+        self._verify = verify
+        self._cert = cert
+        self._session_persist = session_persist
 
     def request(
         self,
@@ -43,17 +57,43 @@ class RequestsTransport:
         data: Any | None = None,
         json: Any | None = None,
         timeout_s: float | None = None,
+        proxy: str | None = None,
+        verify: bool | str | None = None,
+        cert: str | tuple[str, str] | None = None,
     ) -> HttpResponse:
-        r = self._session.request(
-            method=method,
-            url=url,
-            headers=dict(headers) if headers else None,
-            cookies=dict(cookies) if cookies else None,
-            params=dict(params) if params else None,
-            data=data,
-            json=json,
-            timeout=timeout_s,
-        )
+        final_proxy = proxy if proxy is not None else self._proxy
+        final_verify = verify if verify is not None else self._verify
+        final_cert = cert if cert is not None else self._cert
+        proxies = {"http": final_proxy, "https": final_proxy} if final_proxy else None
+
+        if self._session_persist:
+            r = self._session.request(
+                method=method,
+                url=url,
+                headers=dict(headers) if headers else None,
+                cookies=dict(cookies) if cookies else None,
+                params=dict(params) if params else None,
+                data=data,
+                json=json,
+                timeout=timeout_s,
+                proxies=proxies,
+                verify=final_verify,
+                cert=final_cert,
+            )
+        else:
+            r = requests.request(
+                method=method,
+                url=url,
+                headers=dict(headers) if headers else None,
+                cookies=dict(cookies) if cookies else None,
+                params=dict(params) if params else None,
+                data=data,
+                json=json,
+                timeout=timeout_s,
+                proxies=proxies,
+                verify=final_verify,
+                cert=final_cert,
+            )
         try:
             j = r.json()
         except Exception:
@@ -78,6 +118,9 @@ class DummyTransport:
         data: Any | None = None,
         json: Any | None = None,
         timeout_s: float | None = None,
+        proxy: str | None = None,
+        verify: bool | str | None = None,
+        cert: str | tuple[str, str] | None = None,
     ) -> HttpResponse:
         key = (method.upper(), url)
         if key not in self._routes:

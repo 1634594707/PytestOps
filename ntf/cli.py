@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import re
+import threading
 import subprocess
 import sys
 import ast
@@ -12,6 +13,7 @@ import shutil
 import importlib.util
 import importlib
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,7 @@ from ntf.executor import ExecuteError, RequestExecutor
 from ntf.extract import ExtractStore
 from ntf.http import RequestsTransport
 from ntf.allure_results import AllureResultsWriter, now_ms
-from ntf.renderer import clear_external_functions, set_external_functions
+from ntf.renderer import RenderContext, Renderer, clear_external_functions, set_external_functions
 from ntf.yaml_case import load_yaml_suite
 
 import pytest
@@ -40,6 +42,7 @@ def main() -> None:
 
     run = sub.add_parser("run")
     run.add_argument("--config", default=str(Path("configs/default.yaml")))
+    run.add_argument("--profile", default=None, help="Config profile name in config YAML.")
     run.add_argument("--allure-dir", default=None, help="If set, pass --alluredir to pytest.")
     run.add_argument(
         "--debugtalk",
@@ -54,6 +57,7 @@ def main() -> None:
 
     run_yaml = sub.add_parser("run-yaml")
     run_yaml.add_argument("--config", default=str(Path("configs/default.yaml")))
+    run_yaml.add_argument("--profile", default=None, help="Config profile name in config YAML.")
     run_yaml.add_argument(
         "--allure-dir",
         default=None,
@@ -121,6 +125,14 @@ def main() -> None:
         default=None,
         help="Path to a python file providing DebugTalk-style functions for ${func()} rendering.",
     )
+    run_yaml.add_argument("--retry", type=int, default=0, help="Retry times per case.")
+    run_yaml.add_argument(
+        "--retry-on",
+        default="request,timeout,5xx",
+        help="Comma separated retry conditions: request,validation,extract,timeout,5xx,exception",
+    )
+    run_yaml.add_argument("--workers", type=int, default=1, help="Worker threads for independent cases.")
+    run_yaml.add_argument("--timeout-s", type=float, default=None, help="Override global timeout seconds.")
 
     allure = sub.add_parser("allure")
     allure_sub = allure.add_subparsers(dest="allure_cmd", required=True)
@@ -159,6 +171,7 @@ def main() -> None:
     ns, unknown_args = parser.parse_known_args()
 
     if ns.cmd == "run":
+        _ = load_config(ns.config, profile=ns.profile)
         # Forward anything after `--` to pytest. Using parse_known_args keeps compatibility
         # with the common pattern: `ntf run ... -- -k xxx`.
         args = []
@@ -184,7 +197,7 @@ def main() -> None:
     if ns.cmd == "run-yaml":
         if unknown_args:
             raise SystemExit(f"Unknown arguments for run-yaml: {unknown_args}")
-        cfg = load_config(ns.config)
+        cfg = load_config(ns.config, profile=ns.profile)
 
         include_file_re = re.compile(ns.include_file) if ns.include_file else None
         exclude_file_re = re.compile(ns.exclude_file) if ns.exclude_file else None
@@ -250,15 +263,22 @@ def main() -> None:
             k, v = item.split("=", 1)
             store.set(k, v)
 
-        transport = RequestsTransport()
+        transport = RequestsTransport(
+            proxy=cfg.http_proxy,
+            verify=cfg.http_verify,
+            cert=cfg.http_cert,
+            session_persist=cfg.http_session_persist,
+        )
         engine = AssertionEngine()
+        timeout_s = ns.timeout_s if ns.timeout_s is not None else cfg.timeout_s
         executor = RequestExecutor(
             base_url=cfg.base_url,
-            timeout_s=cfg.timeout_s,
+            timeout_s=timeout_s,
             transport=transport,
             extract_store=store,
             assertion_engine=engine,
             functions=functions,
+            sign_config=cfg.sign,
         )
 
         if ns.mock_login:
@@ -268,6 +288,7 @@ def main() -> None:
         total = 0
         passed = 0
         failed = 0
+        skipped = 0
 
         failures: list[dict[str, Any]] = []
 
@@ -275,6 +296,7 @@ def main() -> None:
         if ns.allure_dir:
             allure_writer = AllureResultsWriter(ns.allure_dir)
 
+        case_entries: list[dict[str, Any]] = []
         for f in uniq_files:
             suite = load_yaml_suite(f)
             for base, cases in suite:
@@ -284,157 +306,138 @@ def main() -> None:
                         continue
                     if exclude_case_re and exclude_case_re.search(tc.case_name):
                         continue
-                    total += 1
-                    start_ms = now_ms()
-                    try:
-                        r = executor.execute(
-                            method=base.method,
-                            url=base.url,
-                            headers=base.header,
-                            cookies=cookies,
-                            request_kwargs=tc.request,
-                            extract=tc.extract,
-                            extract_list=tc.extract_list,
-                            validation=tc.validation,
-                        )
-                        stop_ms = now_ms()
+                    case_id = f"{f}::{tc.case_name}"
+                    case_entries.append(
+                        {
+                            "id": case_id,
+                            "file": f,
+                            "base": base,
+                            "tc": tc,
+                            "cookies": cookies,
+                            "depends": tc.depends_on or [],
+                        }
+                    )
+
+        if not case_entries:
+            raise SystemExit("No cases matched after filters.")
+
+        retry_on = {x.strip().lower() for x in str(ns.retry_on).split(",") if x.strip()}
+        ordered_entries = _order_case_entries(case_entries)
+        total = len(ordered_entries)
+        status_by_id: dict[str, str] = {}
+        allure_lock = threading.Lock()
+
+        can_parallel = ns.workers > 1 and _can_parallelize(ordered_entries)
+        if ns.workers > 1 and not can_parallel:
+            print("workers>1 requested, but current case graph needs ordered/shared execution; fallback to sequential.")
+
+        def _record_failure(file_path: str, case_name: str, message: str) -> None:
+            failures.append({"file": file_path, "case_name": case_name, "error": message})
+
+        if can_parallel:
+            with ThreadPoolExecutor(max_workers=max(1, ns.workers)) as pool:
+                future_map = {
+                    pool.submit(
+                        _run_case_with_retry,
+                        executor=executor,
+                        base=e["base"],
+                        tc=e["tc"],
+                        cookies=e["cookies"],
+                        retry=max(0, int(e["tc"].retry if e["tc"].retry is not None else ns.retry)),
+                        retry_on=retry_on,
+                    ): e
+                    for e in ordered_entries
+                }
+                for fut in as_completed(future_map):
+                    e = future_map[fut]
+                    file_path = e["file"]
+                    tc = e["tc"]
+                    start_ms, stop_ms, ok, result, err = fut.result()
+                    if ok:
                         passed += 1
+                        status_by_id[e["id"]] = "passed"
+                        if allure_writer is not None and result is not None:
+                            with allure_lock:
+                                _write_allure_for_success(allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, result)
+                        continue
 
-                        if allure_writer is not None:
-                            req_dump = json.dumps({"meta": {"file": f}, "request": r.request}, ensure_ascii=False)
-                            resp_dump = json.dumps(
-                                {
-                                    "status_code": r.response.status_code,
-                                    "text": r.response.text,
-                                    "json": r.response.json_data,
-                                },
-                                ensure_ascii=False,
-                            )
+                    failed += 1
+                    status_by_id[e["id"]] = "failed"
+                    msg = _err_message(err)
+                    print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    _record_failure(file_path, tc.case_name, msg)
+                    if allure_writer is not None:
+                        with allure_lock:
+                            _write_allure_for_failure(allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, err)
+                    if not ns.continue_on_fail:
+                        break
+        else:
+            for e in ordered_entries:
+                file_path = e["file"]
+                tc = e["tc"]
+                dep_ids = e.get("dep_ids", [])
+                if dep_ids and any(status_by_id.get(d) != "passed" for d in dep_ids):
+                    skipped += 1
+                    status_by_id[e["id"]] = "skipped"
+                    msg = f"dependency not passed: {dep_ids}"
+                    print(f"[SKIP] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    _record_failure(file_path, tc.case_name, msg)
+                    if allure_writer is not None:
+                        _write_allure_for_skipped(allure_writer, file_path, e["base"].api_name, tc.case_name, msg)
+                    continue
 
-                            t = r.timings_ms
-                            steps = [
-                                {
-                                    "name": "request",
-                                    "status": "passed",
-                                    "stage": "finished",
-                                    "start": t.get("case_start", start_ms),
-                                    "stop": t.get("request_stop", stop_ms),
-                                },
-                                {
-                                    "name": "validate",
-                                    "status": "passed",
-                                    "stage": "finished",
-                                    "start": t.get("request_stop", start_ms),
-                                    "stop": t.get("case_stop", stop_ms),
-                                },
-                            ]
-                            allure_writer.write_case_result(
-                                suite_name=base.api_name or Path(f).stem,
-                                case_name=tc.case_name,
-                                file_path=f,
-                                status="passed",
-                                start_ms=start_ms,
-                                stop_ms=stop_ms,
-                                attachments=[
-                                    ("request", "application/json", req_dump),
-                                    ("response", "application/json", resp_dump),
-                                ],
-                                steps=steps,
+                start_ms = now_ms()
+                try:
+                    _run_hooks(tc.setup_hooks, store, functions=functions, phase="setup_hooks", case_name=tc.case_name)
+                    s_ms, stop_ms, ok, result, err = _run_case_with_retry(
+                        executor=executor,
+                        base=e["base"],
+                        tc=tc,
+                        cookies=e["cookies"],
+                        retry=max(0, int(tc.retry if tc.retry is not None else ns.retry)),
+                        retry_on=retry_on,
+                    )
+                    start_ms = s_ms
+                    if ok:
+                        passed += 1
+                        status_by_id[e["id"]] = "passed"
+                        if allure_writer is not None and result is not None:
+                            _write_allure_for_success(
+                                allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, result
                             )
-                    except ExecuteError as e:
-                        stop_ms = now_ms()
+                    else:
                         failed += 1
-                        msg = str(e.original) if e.original is not None else str(e)
-                        print(f"[FAIL] {Path(f).name} :: {tc.case_name} -> {msg}")
-
+                        status_by_id[e["id"]] = "failed"
+                        msg = _err_message(err)
+                        print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                        _record_failure(file_path, tc.case_name, msg)
                         if allure_writer is not None:
-                            req_dump = json.dumps({"meta": {"file": f, "stage": e.stage}, "request": e.request}, ensure_ascii=False)
-
-                            resp_payload: dict[str, Any] | None = None
-                            if e.response is not None:
-                                resp_payload = {
-                                    "status_code": e.response.status_code,
-                                    "text": e.response.text,
-                                    "json": e.response.json_data,
-                                }
-                            resp_dump = json.dumps(resp_payload, ensure_ascii=False)
-
-                            steps = [
-                                {
-                                    "name": "request",
-                                    "status": "failed" if e.stage == "request" else "passed",
-                                    "stage": "finished",
-                                    "start": start_ms,
-                                    "stop": stop_ms,
-                                }
-                            ]
-                            if e.stage == "validation":
-                                steps.append(
-                                    {
-                                        "name": "validate",
-                                        "status": "failed",
-                                        "stage": "finished",
-                                        "start": start_ms,
-                                        "stop": stop_ms,
-                                    }
-                                )
-
-                            allure_writer.write_case_result(
-                                suite_name=base.api_name or Path(f).stem,
-                                case_name=tc.case_name,
-                                file_path=f,
-                                status="failed",
-                                start_ms=start_ms,
-                                stop_ms=stop_ms,
-                                status_details={
-                                    "message": msg,
-                                    "trace": traceback.format_exc(),
-                                },
-                                attachments=[
-                                    ("request", "application/json", req_dump),
-                                    ("response", "application/json", resp_dump),
-                                ],
-                                steps=steps,
+                            _write_allure_for_failure(
+                                allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, err
                             )
-                    except Exception as e:
-                        stop_ms = now_ms()
-                        failed += 1
-                        msg = str(e)
-                        print(f"[FAIL] {Path(f).name} :: {tc.case_name} -> {msg}")
-
-                        if allure_writer is not None:
-                            allure_writer.write_case_result(
-                                suite_name=base.api_name or Path(f).stem,
-                                case_name=tc.case_name,
-                                file_path=f,
-                                status="failed",
-                                start_ms=start_ms,
-                                stop_ms=stop_ms,
-                                status_details={
-                                    "message": msg,
-                                    "trace": traceback.format_exc(),
-                                },
-                                attachments=[
-                                    ("error", "text/plain", msg),
-                                ],
-                            )
-
-                        failures.append(
-                            {
-                                "file": f,
-                                "case_name": tc.case_name,
-                                "error": msg,
-                            }
-                        )
                         if not ns.continue_on_fail:
-                            summary = {"total": total, "passed": passed, "failed": failed}
-                            print(f"Summary: total={total} passed={passed} failed={failed}")
-                            if ns.report:
-                                _write_report(ns.report, summary=summary, failures=failures)
                             raise SystemExit(1)
+                except Exception as hook_err:
+                    stop_ms = now_ms()
+                    failed += 1
+                    status_by_id[e["id"]] = "failed"
+                    msg = str(hook_err)
+                    print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    _record_failure(file_path, tc.case_name, msg)
+                    if allure_writer is not None:
+                        _write_allure_for_failure(
+                            allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, hook_err
+                        )
+                    if not ns.continue_on_fail:
+                        raise SystemExit(1)
+                finally:
+                    try:
+                        _run_hooks(tc.teardown_hooks, store, functions=functions, phase="teardown_hooks", case_name=tc.case_name)
+                    except Exception as teardown_err:
+                        print(f"[WARN] {Path(file_path).name} :: {tc.case_name} teardown error -> {teardown_err}")
 
-        summary = {"total": total, "passed": passed, "failed": failed}
-        print(f"Summary: total={total} passed={passed} failed={failed}")
+        summary = {"total": total, "passed": passed, "failed": failed, "skipped": skipped}
+        print(f"Summary: total={total} passed={passed} failed={failed} skipped={skipped}")
         if ns.report:
             _write_report(ns.report, summary=summary, failures=failures)
         raise SystemExit(0 if failed == 0 else 1)
@@ -552,6 +555,321 @@ def main() -> None:
                 args.append("--clean")
             p = subprocess.Popen(args)
             raise SystemExit(p.wait())
+
+
+def _run_hooks(hooks: list[Any] | None, store: ExtractStore, *, functions: Any | None, phase: str, case_name: str) -> None:
+    if not hooks:
+        return
+    renderer = Renderer(RenderContext(extract_store=store), functions=functions)
+    for idx, hook in enumerate(hooks):
+        try:
+            if isinstance(hook, str):
+                renderer.render(hook)
+                continue
+            if isinstance(hook, dict):
+                if "set" in hook and isinstance(hook["set"], dict):
+                    for k, v in hook["set"].items():
+                        store.set(str(k), renderer.render(v))
+                    continue
+                if "call" in hook:
+                    renderer.render(str(hook["call"]))
+                    continue
+                renderer.render(hook)
+                continue
+            renderer.render(hook)
+        except Exception as e:
+            raise RuntimeError(f"{phase} failed at index={idx} case={case_name}: {e}") from e
+
+
+def _order_case_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not entries:
+        return entries
+
+    by_id = {e["id"]: e for e in entries}
+    by_stem_case: dict[str, list[str]] = {}
+    by_case: dict[str, list[str]] = {}
+    for e in entries:
+        file_path = str(e["file"])
+        case_name = str(e["tc"].case_name)
+        stem_key = f"{Path(file_path).stem}::{case_name}"
+        by_stem_case.setdefault(stem_key, []).append(e["id"])
+        by_case.setdefault(case_name, []).append(e["id"])
+
+    dep_ids_map: dict[str, list[str]] = {}
+    for e in entries:
+        cur_file = str(e["file"])
+        deps: list[str] = []
+        for dep in e.get("depends", []):
+            dep = str(dep).strip()
+            if not dep:
+                continue
+            if dep in by_id:
+                deps.append(dep)
+                continue
+            if "::" in dep:
+                matched = by_stem_case.get(dep)
+                if matched and len(matched) == 1:
+                    deps.append(matched[0])
+                    continue
+                matched2 = [x for x in by_id.keys() if x.endswith(f"::{dep.split('::', 1)[1]}") and x.startswith(dep.split("::", 1)[0])]
+                if len(matched2) == 1:
+                    deps.append(matched2[0])
+                    continue
+                raise ValueError(f"depends_on unresolved/ambiguous: {dep} (in {cur_file}::{e['tc'].case_name})")
+
+            candidates = by_case.get(dep, [])
+            if len(candidates) == 1:
+                deps.append(candidates[0])
+                continue
+            if len(candidates) == 0:
+                raise ValueError(f"depends_on missing: {dep} (in {cur_file}::{e['tc'].case_name})")
+            raise ValueError(f"depends_on ambiguous: {dep} (in {cur_file}::{e['tc'].case_name})")
+        dep_ids_map[e["id"]] = deps
+
+    in_degree: dict[str, int] = {k: 0 for k in by_id.keys()}
+    graph: dict[str, list[str]] = {k: [] for k in by_id.keys()}
+    for node, deps in dep_ids_map.items():
+        for d in deps:
+            graph[d].append(node)
+            in_degree[node] += 1
+
+    q: list[str] = [k for k, v in in_degree.items() if v == 0]
+    ordered_ids: list[str] = []
+    while q:
+        n = q.pop(0)
+        ordered_ids.append(n)
+        for nxt in graph[n]:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                q.append(nxt)
+
+    if len(ordered_ids) != len(entries):
+        cycle_nodes = [k for k, v in in_degree.items() if v > 0]
+        raise ValueError(f"depends_on cycle detected: {cycle_nodes}")
+
+    ordered: list[dict[str, Any]] = []
+    for node_id in ordered_ids:
+        e = dict(by_id[node_id])
+        e["dep_ids"] = dep_ids_map[node_id]
+        ordered.append(e)
+    return ordered
+
+
+def _can_parallelize(entries: list[dict[str, Any]]) -> bool:
+    for e in entries:
+        tc = e["tc"]
+        if e.get("dep_ids"):
+            return False
+        if tc.setup_hooks or tc.teardown_hooks:
+            return False
+        if tc.extract or tc.extract_list:
+            return False
+    return True
+
+
+def _run_case_with_retry(
+    *,
+    executor: RequestExecutor,
+    base: Any,
+    tc: Any,
+    cookies: dict[str, Any] | None,
+    retry: int,
+    retry_on: set[str],
+) -> tuple[int, int, bool, Any | None, BaseException | None]:
+    attempt = 0
+    start_ms = now_ms()
+    while True:
+        attempt += 1
+        try:
+            result = executor.execute(
+                method=base.method,
+                url=base.url,
+                headers=base.header,
+                cookies=cookies,
+                request_kwargs=tc.request,
+                extract=tc.extract,
+                extract_list=tc.extract_list,
+                validation=tc.validation,
+                timeout_s=tc.timeout_s,
+            )
+            stop_ms = now_ms()
+            return start_ms, stop_ms, True, result, None
+        except Exception as e:
+            stop_ms = now_ms()
+            if attempt > (retry + 1):
+                return start_ms, stop_ms, False, None, e
+            if not _should_retry(e, retry_on):
+                return start_ms, stop_ms, False, None, e
+
+
+def _should_retry(err: BaseException, retry_on: set[str]) -> bool:
+    if "exception" in retry_on:
+        return True
+
+    if isinstance(err, ExecuteError):
+        stage = str(err.stage).lower()
+        if stage in retry_on:
+            return True
+        if "5xx" in retry_on and err.response is not None and int(err.response.status_code) >= 500:
+            return True
+        if "timeout" in retry_on and _is_timeout_error(err.original):
+            return True
+        return False
+
+    if "timeout" in retry_on and _is_timeout_error(err):
+        return True
+    return False
+
+
+def _is_timeout_error(err: BaseException | None) -> bool:
+    if err is None:
+        return False
+    name = err.__class__.__name__.lower()
+    if "timeout" in name:
+        return True
+    msg = str(err).lower()
+    return "timed out" in msg or "timeout" in msg
+
+
+def _err_message(err: BaseException | None) -> str:
+    if err is None:
+        return "unknown error"
+    if isinstance(err, ExecuteError):
+        return str(err.original) if err.original is not None else str(err)
+    return str(err)
+
+
+def _write_allure_for_success(
+    writer: AllureResultsWriter,
+    file_path: str,
+    suite_name: str,
+    case_name: str,
+    start_ms: int,
+    stop_ms: int,
+    result: Any,
+) -> None:
+    req_dump = json.dumps({"meta": {"file": file_path}, "request": result.request}, ensure_ascii=False)
+    resp_dump = json.dumps(
+        {
+            "status_code": result.response.status_code,
+            "text": result.response.text,
+            "json": result.response.json_data,
+        },
+        ensure_ascii=False,
+    )
+    t = result.timings_ms
+    steps = [
+        {
+            "name": "request",
+            "status": "passed",
+            "stage": "finished",
+            "start": t.get("case_start", start_ms),
+            "stop": t.get("request_stop", stop_ms),
+        },
+        {
+            "name": "validate",
+            "status": "passed",
+            "stage": "finished",
+            "start": t.get("request_stop", start_ms),
+            "stop": t.get("case_stop", stop_ms),
+        },
+    ]
+    writer.write_case_result(
+        suite_name=suite_name or Path(file_path).stem,
+        case_name=case_name,
+        file_path=file_path,
+        status="passed",
+        start_ms=start_ms,
+        stop_ms=stop_ms,
+        attachments=[
+            ("request", "application/json", req_dump),
+            ("response", "application/json", resp_dump),
+        ],
+        steps=steps,
+    )
+
+
+def _write_allure_for_failure(
+    writer: AllureResultsWriter,
+    file_path: str,
+    suite_name: str,
+    case_name: str,
+    start_ms: int,
+    stop_ms: int,
+    err: BaseException | None,
+) -> None:
+    details = {"message": _err_message(err), "trace": traceback.format_exc()}
+    if isinstance(err, ExecuteError):
+        req_dump = json.dumps({"meta": {"file": file_path, "stage": err.stage}, "request": err.request}, ensure_ascii=False)
+        resp_payload: dict[str, Any] | None = None
+        if err.response is not None:
+            resp_payload = {
+                "status_code": err.response.status_code,
+                "text": err.response.text,
+                "json": err.response.json_data,
+            }
+        resp_dump = json.dumps(resp_payload, ensure_ascii=False)
+        writer.write_case_result(
+            suite_name=suite_name or Path(file_path).stem,
+            case_name=case_name,
+            file_path=file_path,
+            status="failed",
+            start_ms=start_ms,
+            stop_ms=stop_ms,
+            status_details=details,
+            attachments=[("request", "application/json", req_dump), ("response", "application/json", resp_dump)],
+            steps=[
+                {
+                    "name": "request",
+                    "status": "failed" if err.stage == "request" else "passed",
+                    "stage": "finished",
+                    "start": start_ms,
+                    "stop": stop_ms,
+                },
+                {
+                    "name": "validate",
+                    "status": "failed" if err.stage == "validation" else "passed",
+                    "stage": "finished",
+                    "start": start_ms,
+                    "stop": stop_ms,
+                },
+            ],
+        )
+        return
+
+    writer.write_case_result(
+        suite_name=suite_name or Path(file_path).stem,
+        case_name=case_name,
+        file_path=file_path,
+        status="failed",
+        start_ms=start_ms,
+        stop_ms=stop_ms,
+        status_details=details,
+        attachments=[("error", "text/plain", _err_message(err))],
+        steps=[
+            {
+                "name": "run",
+                "status": "failed",
+                "stage": "finished",
+                "start": start_ms,
+                "stop": stop_ms,
+            }
+        ],
+    )
+
+
+def _write_allure_for_skipped(writer: AllureResultsWriter, file_path: str, suite_name: str, case_name: str, reason: str) -> None:
+    t = now_ms()
+    writer.write_case_result(
+        suite_name=suite_name or Path(file_path).stem,
+        case_name=case_name,
+        file_path=file_path,
+        status="skipped",
+        start_ms=t,
+        stop_ms=t,
+        status_details={"message": reason},
+        attachments=[("skip", "text/plain", reason)],
+    )
 
 
 def _write_json(path: str, data: Any) -> None:

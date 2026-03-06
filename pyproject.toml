@@ -19,7 +19,7 @@ ntf = "ntf.cli:main"
 ntf = "ntf.pytest_plugin"
 
 [tool.pytest.ini_options]
-addopts = "-ra -q --basetemp=.pytest_tmp -p no:cacheprovider"
+addopts = "-ra -q -p no:cacheprovider"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

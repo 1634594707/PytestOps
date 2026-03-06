@@ -115,3 +115,26 @@ def test_executor_extract_invalid_strategy_error_readable():
         msg = str(e.original)
         assert "extract[bad]" in msg
         assert "strategy" in msg
+
+
+def test_executor_sign_injects_header():
+    store = ExtractStore()
+    transport = DummyTransport(
+        {
+            ("GET", "http://example.local/signed"): HttpResponse(
+                status_code=200,
+                text='{"ok": true}',
+                json_data={"ok": True},
+            )
+        }
+    )
+    ex = RequestExecutor(
+        base_url="http://example.local",
+        timeout_s=1,
+        transport=transport,
+        extract_store=store,
+        assertion_engine=AssertionEngine(),
+        sign_config={"algorithm": "sha1", "location": "headers", "field": "X-Sign", "content": "{method}|{url}|{body}"},
+    )
+    r = ex.execute(method="GET", url="/signed", request_kwargs={}, validation=[{"contains": {"status_code": 200}}])
+    assert "X-Sign" in (r.request.get("headers") or {})

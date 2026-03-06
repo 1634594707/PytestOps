@@ -276,3 +276,14 @@
 3. 断言体系增强（M2） + 提取增强（M3）
 4. hooks + 重试 + 并发（M4/M5）
 5. migrate convert 的“规范化/自动修复”（可并行推进）
+
+---
+
+## Progress Update (2026-03-06)
+
+P1 milestones implemented in current codebase:
+
+- M4: `run-yaml` supports `setup_hooks` / `teardown_hooks` / `depends_on`, with dependency cycle detection and skip-on-dependency-failure behavior.
+- M5: added `--retry`, `--retry-on`, `--workers`, `--timeout-s`.
+- M6: added profile loading (`--profile`) and layered config override strategy (`env > profile > default`).
+- M7: HTTP transport supports proxy/cert/verify/session options and optional request signing.

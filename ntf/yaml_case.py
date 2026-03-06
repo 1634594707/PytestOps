@@ -23,6 +23,11 @@ class YamlTestCase:
     validation: list[dict[str, Any]]
     extract: dict[str, Any] | None = None
     extract_list: dict[str, Any] | None = None
+    setup_hooks: list[Any] | None = None
+    teardown_hooks: list[Any] | None = None
+    depends_on: list[str] | None = None
+    timeout_s: float | None = None
+    retry: int | None = None
 
 
 def load_yaml_cases(path: str | Path) -> tuple[YamlBaseInfo, list[YamlTestCase]]:
@@ -83,12 +88,36 @@ def load_yaml_suite_from_data(data: Any) -> list[tuple[YamlBaseInfo, list[YamlTe
 
             extract = item.get("extract")
             extract_list = item.get("extract_list")
+            setup_hooks = item.get("setup_hooks")
+            teardown_hooks = item.get("teardown_hooks")
+            depends_on_raw = item.get("depends_on")
+            timeout_s_raw = item.get("timeout_s")
+            retry_raw = item.get("retry")
+
+            depends_on: list[str] | None = None
+            if isinstance(depends_on_raw, str) and depends_on_raw.strip():
+                depends_on = [depends_on_raw.strip()]
+            elif isinstance(depends_on_raw, list):
+                depends_on = [str(x).strip() for x in depends_on_raw if str(x).strip()]
+
+            timeout_s: float | None = None
+            if timeout_s_raw is not None:
+                timeout_s = float(timeout_s_raw)
+
+            retry: int | None = None
+            if retry_raw is not None:
+                retry = int(retry_raw)
 
             req = dict(item)
             req.pop("case_name", None)
             req.pop("validation", None)
             req.pop("extract", None)
             req.pop("extract_list", None)
+            req.pop("setup_hooks", None)
+            req.pop("teardown_hooks", None)
+            req.pop("depends_on", None)
+            req.pop("timeout_s", None)
+            req.pop("retry", None)
 
             tcs.append(
                 YamlTestCase(
@@ -97,6 +126,11 @@ def load_yaml_suite_from_data(data: Any) -> list[tuple[YamlBaseInfo, list[YamlTe
                     validation=validation,
                     extract=extract,
                     extract_list=extract_list,
+                    setup_hooks=setup_hooks,
+                    teardown_hooks=teardown_hooks,
+                    depends_on=depends_on,
+                    timeout_s=timeout_s,
+                    retry=retry,
                 )
             )
 

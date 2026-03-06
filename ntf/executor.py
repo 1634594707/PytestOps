@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import random
 import re
 import time
@@ -45,6 +47,7 @@ class RequestExecutor:
         extract_store: ExtractStore,
         assertion_engine: AssertionEngine | None = None,
         functions: Any | None = None,
+        sign_config: dict[str, Any] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
@@ -52,6 +55,7 @@ class RequestExecutor:
         self._store = extract_store
         self._assertions = assertion_engine or AssertionEngine()
         self._renderer = Renderer(RenderContext(extract_store=self._store), functions=functions)
+        self._sign_config = sign_config
 
     def execute(
         self,
@@ -64,6 +68,7 @@ class RequestExecutor:
         extract: dict[str, Any] | None = None,
         extract_list: dict[str, Any] | None = None,
         validation: list[dict[str, Any]] | None = None,
+        timeout_s: float | None = None,
     ) -> ExecuteResult:
         t0 = _now_ms()
         full_url = url
@@ -75,6 +80,16 @@ class RequestExecutor:
         headers = self._renderer.render(headers) if headers else None
         cookies = self._renderer.render(cookies) if cookies else None
         request_kwargs = self._renderer.render(request_kwargs or {})
+        timeout_override = request_kwargs.pop("timeout_s", None)
+        timeout_value = (
+            float(timeout_s)
+            if timeout_s is not None
+            else (float(timeout_override) if timeout_override is not None else self._timeout_s)
+        )
+        proxy = request_kwargs.pop("proxy", None)
+        verify = request_kwargs.pop("verify", None)
+        cert = request_kwargs.pop("cert", None)
+        sign_rule = request_kwargs.pop("sign", None)
 
         request_info: dict[str, Any] = {
             "method": method,
@@ -84,8 +99,23 @@ class RequestExecutor:
             "params": request_kwargs.get("params"),
             "data": request_kwargs.get("data"),
             "json": request_kwargs.get("json"),
-            "timeout_s": self._timeout_s,
+            "timeout_s": timeout_value,
+            "proxy": proxy,
+            "verify": verify,
+            "cert": cert,
         }
+
+        headers, request_kwargs = self._apply_sign(
+            method=method,
+            url=full_url,
+            headers=headers,
+            request_kwargs=request_kwargs,
+            sign_rule=sign_rule,
+        )
+        request_info["headers"] = headers
+        request_info["params"] = request_kwargs.get("params")
+        request_info["data"] = request_kwargs.get("data")
+        request_info["json"] = request_kwargs.get("json")
 
         try:
             r = self._transport.request(
@@ -96,7 +126,10 @@ class RequestExecutor:
                 params=request_kwargs.get("params"),
                 data=request_kwargs.get("data"),
                 json=request_kwargs.get("json"),
-                timeout_s=self._timeout_s,
+                timeout_s=timeout_value,
+                proxy=str(proxy) if proxy else None,
+                verify=verify,
+                cert=cert,
             )
         except Exception as e:
             raise ExecuteError(stage="request", request=request_info, original=e) from e
@@ -399,3 +432,72 @@ class RequestExecutor(RequestExecutor):
         if len(s) <= max_len:
             return s
         return s[:max_len] + "...(truncated)"
+
+    def _apply_sign(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, Any] | None,
+        request_kwargs: dict[str, Any],
+        sign_rule: Any,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        rule = sign_rule if isinstance(sign_rule, dict) else self._sign_config
+        if not isinstance(rule, dict):
+            return headers, request_kwargs
+
+        algorithm = str(rule.get("algorithm", "hmac-sha256")).lower()
+        field = str(rule.get("field", "sign"))
+        location = str(rule.get("location", "headers")).lower()
+        secret = str(rule.get("secret", ""))
+        template = str(rule.get("content", "{method}|{url}|{body}"))
+
+        payload: Any = request_kwargs.get("json")
+        if payload is None:
+            payload = request_kwargs.get("data")
+        if payload is None:
+            payload = request_kwargs.get("params")
+        body = ""
+        try:
+            body = json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload is not None else ""
+        except Exception:
+            body = str(payload)
+
+        message = template.format(method=method.upper(), url=url, body=body)
+        sig = self._compute_sign(algorithm=algorithm, secret=secret, message=message)
+
+        if location == "headers":
+            target = dict(headers or {})
+            target[field] = sig
+            return target, request_kwargs
+
+        if location == "params":
+            target = dict(request_kwargs.get("params") or {})
+            target[field] = sig
+            request_kwargs["params"] = target
+            return headers, request_kwargs
+
+        if location == "data":
+            target = dict(request_kwargs.get("data") or {})
+            target[field] = sig
+            request_kwargs["data"] = target
+            return headers, request_kwargs
+
+        if location == "json":
+            target = dict(request_kwargs.get("json") or {})
+            target[field] = sig
+            request_kwargs["json"] = target
+            return headers, request_kwargs
+
+        raise ValueError(f"invalid sign location: {location}")
+
+    def _compute_sign(self, *, algorithm: str, secret: str, message: str) -> str:
+        msg_bytes = message.encode("utf-8")
+        secret_bytes = secret.encode("utf-8")
+        if algorithm == "hmac-sha256":
+            return hmac.new(secret_bytes, msg_bytes, hashlib.sha256).hexdigest()
+        if algorithm == "hmac-sha1":
+            return hmac.new(secret_bytes, msg_bytes, hashlib.sha1).hexdigest()
+        if algorithm == "sha1":
+            return hashlib.sha1(msg_bytes).hexdigest()
+        raise ValueError(f"unsupported sign algorithm: {algorithm}")

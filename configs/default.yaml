@@ -1,3 +1,23 @@
 api:
   base_url: "http://127.0.0.1:8787"
   timeout_s: 60
+
+http:
+  proxy: null
+  verify: true
+  cert: null
+  session_persist: true
+
+# Optional request sign config (can also be overridden in request kwargs via `sign`)
+sign:
+  algorithm: "hmac-sha256" # hmac-sha256 / hmac-sha1 / sha1
+  secret: ""
+  field: "X-Sign"
+  location: "headers"      # headers / params / data / json
+  content: "{method}|{url}|{body}"
+
+profiles:
+  test:
+    api:
+      base_url: "http://127.0.0.1:8787"
+      timeout_s: 30
