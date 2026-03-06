@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import logging
 import os
 import re
 import threading
@@ -12,6 +13,7 @@ import ast
 import shutil
 import importlib.util
 import importlib
+from importlib import metadata
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -28,6 +30,8 @@ from ntf.yaml_case import load_yaml_suite
 
 import pytest
 
+LOG = logging.getLogger("ntf")
+
 
 def main() -> None:
     argv = sys.argv[1:]
@@ -38,7 +42,10 @@ def main() -> None:
         raise SystemExit(2)
 
     parser = argparse.ArgumentParser(prog="ntf")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser.add_argument("--version", action="store_true", help="Print ntf and Python version.")
+    parser.add_argument("--log-level", default="INFO", help="Logging level: DEBUG/INFO/WARNING/ERROR.")
+    parser.add_argument("--log-file", default=None, help="Write logs to file.")
+    sub = parser.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run")
     run.add_argument("--config", default=str(Path("configs/default.yaml")))
@@ -168,7 +175,21 @@ def main() -> None:
     mig_convert.add_argument("--dst", required=True, help="Destination directory to copy YAML files into.")
     mig_convert.add_argument("--index", default=None, help="Write index JSON to this path.")
 
+    doctor = sub.add_parser("doctor")
+    doctor.add_argument("--config", default=str(Path("configs/default.yaml")))
+    doctor.add_argument("--profile", default=None)
+
     ns, unknown_args = parser.parse_known_args()
+    _setup_logging(ns.log_level, ns.log_file)
+
+    if ns.version:
+        print(_version_text())
+        if ns.cmd is None:
+            raise SystemExit(0)
+
+    if ns.cmd is None:
+        parser.print_help()
+        raise SystemExit(2)
 
     if ns.cmd == "run":
         _ = load_config(ns.config, profile=ns.profile)
@@ -354,6 +375,7 @@ def main() -> None:
                     tc = e["tc"]
                     start_ms, stop_ms, ok, result, err = fut.result()
                     if ok:
+                        LOG.info("case passed file=%s case=%s", Path(file_path).name, tc.case_name)
                         passed += 1
                         status_by_id[e["id"]] = "passed"
                         if allure_writer is not None and result is not None:
@@ -365,6 +387,7 @@ def main() -> None:
                     status_by_id[e["id"]] = "failed"
                     msg = _err_message(err)
                     print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    LOG.error("case failed file=%s case=%s error=%s", Path(file_path).name, tc.case_name, msg)
                     _record_failure(file_path, tc.case_name, msg)
                     if allure_writer is not None:
                         with allure_lock:
@@ -375,12 +398,14 @@ def main() -> None:
             for e in ordered_entries:
                 file_path = e["file"]
                 tc = e["tc"]
+                LOG.info("case start file=%s case=%s", Path(file_path).name, tc.case_name)
                 dep_ids = e.get("dep_ids", [])
                 if dep_ids and any(status_by_id.get(d) != "passed" for d in dep_ids):
                     skipped += 1
                     status_by_id[e["id"]] = "skipped"
                     msg = f"dependency not passed: {dep_ids}"
                     print(f"[SKIP] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    LOG.warning("case skipped file=%s case=%s reason=%s", Path(file_path).name, tc.case_name, msg)
                     _record_failure(file_path, tc.case_name, msg)
                     if allure_writer is not None:
                         _write_allure_for_skipped(allure_writer, file_path, e["base"].api_name, tc.case_name, msg)
@@ -401,6 +426,7 @@ def main() -> None:
                     if ok:
                         passed += 1
                         status_by_id[e["id"]] = "passed"
+                        LOG.info("case passed file=%s case=%s", Path(file_path).name, tc.case_name)
                         if allure_writer is not None and result is not None:
                             _write_allure_for_success(
                                 allure_writer, file_path, e["base"].api_name, tc.case_name, start_ms, stop_ms, result
@@ -410,6 +436,7 @@ def main() -> None:
                         status_by_id[e["id"]] = "failed"
                         msg = _err_message(err)
                         print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                        LOG.error("case failed file=%s case=%s error=%s", Path(file_path).name, tc.case_name, msg)
                         _record_failure(file_path, tc.case_name, msg)
                         if allure_writer is not None:
                             _write_allure_for_failure(
@@ -423,6 +450,7 @@ def main() -> None:
                     status_by_id[e["id"]] = "failed"
                     msg = str(hook_err)
                     print(f"[FAIL] {Path(file_path).name} :: {tc.case_name} -> {msg}")
+                    LOG.error("case failed file=%s case=%s error=%s", Path(file_path).name, tc.case_name, msg)
                     _record_failure(file_path, tc.case_name, msg)
                     if allure_writer is not None:
                         _write_allure_for_failure(
@@ -435,9 +463,16 @@ def main() -> None:
                         _run_hooks(tc.teardown_hooks, store, functions=functions, phase="teardown_hooks", case_name=tc.case_name)
                     except Exception as teardown_err:
                         print(f"[WARN] {Path(file_path).name} :: {tc.case_name} teardown error -> {teardown_err}")
+                        LOG.warning(
+                            "teardown hook error file=%s case=%s error=%s",
+                            Path(file_path).name,
+                            tc.case_name,
+                            teardown_err,
+                        )
 
         summary = {"total": total, "passed": passed, "failed": failed, "skipped": skipped}
         print(f"Summary: total={total} passed={passed} failed={failed} skipped={skipped}")
+        LOG.info("run-yaml summary total=%s passed=%s failed=%s skipped=%s", total, passed, failed, skipped)
         if ns.report:
             _write_report(ns.report, summary=summary, failures=failures)
         raise SystemExit(0 if failed == 0 else 1)
@@ -555,6 +590,14 @@ def main() -> None:
                 args.append("--clean")
             p = subprocess.Popen(args)
             raise SystemExit(p.wait())
+
+    if ns.cmd == "doctor":
+        if unknown_args:
+            raise SystemExit(f"Unknown arguments for doctor: {unknown_args}")
+        checks = _collect_doctor_checks(ns.config, profile=ns.profile)
+        _print_doctor_checks(checks)
+        failed = [c for c in checks if c["status"] == "FAIL"]
+        raise SystemExit(1 if failed else 0)
 
 
 def _run_hooks(hooks: list[Any] | None, store: ExtractStore, *, functions: Any | None, phase: str, case_name: str) -> None:
@@ -870,6 +913,98 @@ def _write_allure_for_skipped(writer: AllureResultsWriter, file_path: str, suite
         status_details={"message": reason},
         attachments=[("skip", "text/plain", reason)],
     )
+
+
+def _setup_logging(level: str, log_file: str | None) -> None:
+    resolved = str(level or "INFO").upper()
+    lv = getattr(logging, resolved, logging.INFO)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        p = Path(log_file)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(p, encoding="utf-8"))
+    logging.basicConfig(
+        level=lv,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+    LOG.debug("logging initialized level=%s file=%s", resolved, log_file)
+
+
+def _version_text() -> str:
+    try:
+        v = metadata.version("PytestOps-framework")
+    except Exception:
+        v = "unknown"
+    return f"ntf {v} (python {sys.version.split()[0]})"
+
+
+def _collect_doctor_checks(config_path: str, *, profile: str | None) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+
+    def add(name: str, status: str, detail: str) -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    add("version", "PASS", _version_text())
+    add(
+        "python",
+        "PASS" if sys.version_info >= (3, 12) else "FAIL",
+        f"{sys.version.split()[0]} (requires >=3.12)",
+    )
+
+    for pkg in ("pytest", "requests", "yaml", "jsonpath"):
+        try:
+            importlib.import_module(pkg)
+            add(f"dep:{pkg}", "PASS", "installed")
+        except Exception as e:
+            add(f"dep:{pkg}", "FAIL", f"missing ({e})")
+
+    allure_bin = shutil.which("allure")
+    if allure_bin:
+        add("allure-cli", "PASS", allure_bin)
+    else:
+        add("allure-cli", "WARN", "not found in PATH. install Allure commandline if needed.")
+
+    cfg_file = Path(config_path)
+    if cfg_file.exists():
+        try:
+            cfg = load_config(cfg_file, profile=profile)
+            add("config", "PASS", f"base_url={cfg.base_url} timeout_s={cfg.timeout_s}")
+        except Exception as e:
+            add("config", "FAIL", f"load failed: {e}")
+    else:
+        add("config", "FAIL", f"not found: {cfg_file}")
+
+    mock_entry = Path(__file__).resolve().parent.parent / "mock_server" / "base" / "flask_service.py"
+    add("mock-entry", "PASS" if mock_entry.exists() else "FAIL", str(mock_entry))
+    missing_mock = _check_mock_deps()
+    if missing_mock:
+        add("mock-deps", "WARN", "missing: " + ",".join(missing_mock))
+    else:
+        add("mock-deps", "PASS", "ok")
+
+    for p in [Path("report"), Path(".ntf")]:
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            test_file = p / ".doctor_write_test"
+            test_file.write_text("ok", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            add(f"writable:{p}", "PASS", "ok")
+        except Exception as e:
+            add(f"writable:{p}", "FAIL", str(e))
+
+    return checks
+
+
+def _print_doctor_checks(checks: list[dict[str, str]]) -> None:
+    for c in checks:
+        print(f"[{c['status']}] {c['name']}: {c['detail']}")
+    failed = [c for c in checks if c["status"] == "FAIL"]
+    warns = [c for c in checks if c["status"] == "WARN"]
+    print(f"doctor summary: total={len(checks)} fail={len(failed)} warn={len(warns)}")
+    if failed:
+        print("doctor next step: fix FAIL items first, then rerun `ntf doctor`.")
 
 
 def _write_json(path: str, data: Any) -> None:

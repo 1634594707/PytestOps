@@ -386,3 +386,43 @@ Common env overrides:
 - cert
 - session persistence switch
 - optional request signing (`hmac-sha256` / `hmac-sha1` / `sha1`)
+
+## P2 Features (M8-M9)
+
+### Quality Gates and Release
+
+Local quality commands:
+
+```bash
+python -m pip install -e .[dev]
+ruff check ntf tests
+mypy ntf
+pytest -q
+python -m build
+```
+
+CI pipeline is available at `.github/workflows/ci.yml` and runs lint/type/test/build on push/PR.
+
+### Logging and Doctor
+
+Global CLI flags:
+
+- `--log-level DEBUG|INFO|WARNING|ERROR`
+- `--log-file <path>`
+
+Examples:
+
+```bash
+ntf --version
+ntf doctor --config configs/default.yaml --profile test
+ntf --log-level DEBUG --log-file report/ntf.log run-yaml --config configs/default.yaml --cases tests/data
+```
+
+`ntf doctor` checks:
+
+- runtime/python/package version
+- core dependencies
+- allure CLI availability
+- config loading (with optional profile)
+- mock server entry/dependencies
+- writable report/runtime directories

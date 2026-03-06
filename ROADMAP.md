@@ -287,3 +287,10 @@ P1 milestones implemented in current codebase:
 - M5: added `--retry`, `--retry-on`, `--workers`, `--timeout-s`.
 - M6: added profile loading (`--profile`) and layered config override strategy (`env > profile > default`).
 - M7: HTTP transport supports proxy/cert/verify/session options and optional request signing.
+
+## Progress Update (2026-03-06, P2)
+
+P2 milestones implemented:
+
+- M8: added quality gate setup in project config (dev extras for ruff/mypy/build) and CI workflow (`.github/workflows/ci.yml`) running lint/type/test/build.
+- M9: added CLI logging options (`--log-level`, `--log-file`) and `ntf doctor` diagnostics command; also added `ntf --version` output.
