@@ -1,32 +1,3 @@
-[project]
-name = "ntf-sample-plugin"
-version = "0.1.1"
-description = "Sample plugin pack for PytestOps (ntf)"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-  "PytestOps-framework>=0.1.0",
-  "jsonpath>=0.82.2",
-]
-
-[project.entry-points."ntf.assertions"]
-startswith = "ntf_sample_plugin.assertions:assert_startswith"
-
-[project.entry-points."ntf.functions"]
-functions = "ntf_sample_plugin.functions:FUNCTIONS"
-
-[project.entry-points."ntf.reporters"]
-print = "ntf_sample_plugin.reporter:print_report"
-
-[project.entry-points."ntf.transports"]
-requests_no_session = "ntf_sample_plugin.transport:requests_no_session"
-
-[project.entry-points."ntf.renderers"]
-upper = "ntf_sample_plugin.renderer:UpperRenderer"
-
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools>=70", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["ntf_sample_plugin*"]
