@@ -1,17 +1,16 @@
 from __future__ import annotations
 
+import datetime
 import json
 import random
 import re
 import time
-import datetime
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ntf.extract import ExtractStore
 from ntf.plugins import function_plugins, renderer_plugins
-
 
 _CALL_RE = re.compile(r"\$\{(?P<func>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*?)\)\}")
 

@@ -1,36 +1,36 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import glob
+import importlib
+import importlib.util
 import json
 import logging
 import os
 import re
-import threading
+import shutil
 import subprocess
 import sys
-import ast
-import shutil
-import importlib.util
-import importlib
-from importlib import metadata
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from ntf.allure_results import AllureResultsWriter, now_ms
 from ntf.assertions import AssertionEngine
 from ntf.config import load_config
 from ntf.executor import ExecuteError, RequestExecutor
 from ntf.extract import ExtractStore
 from ntf.http import RequestsTransport
-from ntf.allure_results import AllureResultsWriter, now_ms
+from ntf.integrations.dingding import DingDingBot
 from ntf.plugins import plugin_counts, reporter_plugins, transport_plugins
 from ntf.renderer import RenderContext, build_renderer, clear_external_functions, set_external_functions
-from ntf.integrations.dingding import DingDingBot
 from ntf.yaml_case import load_yaml_suite
-
-import pytest
 
 LOG = logging.getLogger("ntf")
 
@@ -219,8 +219,7 @@ def main() -> None:
         # with the common pattern: `ntf run ... -- -k xxx`.
         args = []
         if ns.debugtalk:
-            functions = _load_debugtalk(ns.debugtalk)
-            set_external_functions(functions)
+            set_external_functions(_load_debugtalk(ns.debugtalk))
         if ns.allure_dir:
             if importlib.util.find_spec("allure_pytest") is None:
                 print("allure-pytest plugin not installed, cannot use --allure-dir.")
@@ -295,9 +294,9 @@ def main() -> None:
 
         store = ExtractStore()
 
-        functions: Any | None = None
+        yaml_functions: Any | None = None
         if ns.debugtalk:
-            functions = _load_debugtalk(ns.debugtalk)
+            yaml_functions = _load_debugtalk(ns.debugtalk)
 
         # preload vars
         for item in ns.vars:
@@ -315,7 +314,7 @@ def main() -> None:
             transport=transport,
             extract_store=store,
             assertion_engine=engine,
-            functions=functions,
+            functions=yaml_functions,
             sign_config=cfg.sign,
             renderer_name=ns.renderer,
         )
@@ -339,7 +338,7 @@ def main() -> None:
         for f in uniq_files:
             suite = load_yaml_suite(f)
             for base, cases in suite:
-                cookies = _parse_cookies(base.cookies, store, functions=functions, renderer_name=ns.renderer)
+                cookies = _parse_cookies(base.cookies, store, functions=yaml_functions, renderer_name=ns.renderer)
                 for tc in cases:
                     if include_case_re and not include_case_re.search(tc.case_name):
                         continue
@@ -434,7 +433,7 @@ def main() -> None:
                     _run_hooks(
                         tc.setup_hooks,
                         store,
-                        functions=functions,
+                        functions=yaml_functions,
                         renderer_name=ns.renderer,
                         phase="setup_hooks",
                         case_name=tc.case_name,
@@ -488,7 +487,7 @@ def main() -> None:
                         _run_hooks(
                             tc.teardown_hooks,
                             store,
-                            functions=functions,
+                            functions=yaml_functions,
                             renderer_name=ns.renderer,
                             phase="teardown_hooks",
                             case_name=tc.case_name,
@@ -637,8 +636,8 @@ def main() -> None:
             raise SystemExit(f"Unknown arguments for doctor: {unknown_args}")
         checks = _collect_doctor_checks(ns.config, profile=ns.profile)
         _print_doctor_checks(checks)
-        failed = [c for c in checks if c["status"] == "FAIL"]
-        raise SystemExit(1 if failed else 0)
+        failed_checks = [c for c in checks if c["status"] == "FAIL"]
+        raise SystemExit(1 if failed_checks else 0)
 
 
 def _run_hooks(

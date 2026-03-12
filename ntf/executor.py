@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
 import hmac
+import json
 import random
 import re
 import time
@@ -13,8 +13,8 @@ import jsonpath
 
 from ntf.assertions import AssertionEngine
 from ntf.extract import ExtractStore
-from ntf.renderer import RenderContext, build_renderer
 from ntf.http import HttpResponse, Transport
+from ntf.renderer import RenderContext, build_renderer
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class ExecuteError(Exception):
         return f"ExecuteError(stage={self.stage})"
 
 
-class RequestExecutor:
+class _RequestExecutorBase:
     def __init__(
         self,
         *,
@@ -180,12 +180,32 @@ class RequestExecutor:
             },
         )
 
+    def _normalize_response(self, r: HttpResponse) -> HttpResponse:
+        return r
+
+    def _apply_extract(self, rules: dict[str, Any], r: HttpResponse) -> None:
+        raise NotImplementedError
+
+    def _apply_extract_list(self, rules: dict[str, Any], r: HttpResponse) -> None:
+        raise NotImplementedError
+
+    def _apply_sign(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, Any] | None,
+        request_kwargs: dict[str, Any],
+        sign_rule: Any,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        return headers, request_kwargs
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-class RequestExecutor(RequestExecutor):
+class RequestExecutor(_RequestExecutorBase):
     def _normalize_response(self, r: HttpResponse) -> HttpResponse:
         """Normalize legacy mock responses.
 

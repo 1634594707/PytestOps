@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
 
@@ -34,3 +35,70 @@ jobs:
 
       - name: Build
         run: python -m build
+
+      - name: Upload Dist
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: quality-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify Tag Matches Version
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $ver = (python - << 'PY'
+          import tomllib
+          with open("pyproject.toml","rb") as f:
+              data = tomllib.load(f)
+          print(data["project"]["version"])
+          PY
+          ).Trim()
+          if ($tag -ne $ver) {
+            Write-Error "Tag v$tag does not match pyproject version $ver"
+          }
+          "PKG_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+        shell: pwsh
+
+      - name: Download Dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@v1.10.0
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Verify Install from TestPyPI
+        run: |
+          python -m pip install --upgrade pip
+          $max = 6
+          for ($i = 1; $i -le $max; $i++) {
+            Write-Host "Attempt $i/$max: installing PytestOps-framework==$env:PKG_VERSION from TestPyPI"
+            python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple PytestOps-framework==$env:PKG_VERSION
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -lt $max) { Start-Sleep -Seconds 15 }
+          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "TestPyPI install failed after $max attempts" }
+          ntf --version
+          ntf --help | Select-String -Pattern "run-yaml" -SimpleMatch
+          ntf doctor --help | Select-String -Pattern "doctor" -SimpleMatch
+        shell: pwsh

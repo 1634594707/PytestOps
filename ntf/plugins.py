@@ -93,8 +93,9 @@ def plugin_counts() -> dict[str, int]:
 
 
 def _load_group(group: str, target: dict[str, Any]) -> None:
+    eps: list[metadata.EntryPoint]
     try:
-        eps = metadata.entry_points(group=group)
+        eps = list(metadata.entry_points(group=group))
     except Exception:
         eps = []
 
