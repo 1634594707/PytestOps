@@ -23,13 +23,7 @@ jobs:
       - name: Verify Tag Matches Version
         run: |
           $tag = "${{ github.ref_name }}".Replace("ntf-sample-plugin-v", "")
-          $ver = (python - << 'PY'
-          import tomllib
-          with open("plugins/ntf_sample_plugin/pyproject.toml","rb") as f:
-              data = tomllib.load(f)
-          print(data["project"]["version"])
-          PY
-          ).Trim()
+          $ver = (python -c "import tomllib; f=open('plugins/ntf_sample_plugin/pyproject.toml','rb'); data=tomllib.load(f); print(data['project']['version'])").Trim()
           if ($tag -ne $ver) {
             Write-Error "Tag ntf-sample-plugin-v$tag does not match plugin version $ver"
           }
